@@ -1,0 +1,1392 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>ザトウムシ プロトタイプ</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#f7f6f2; }
+  #ui {
+    position:fixed; left:14px; top:12px; font-family:"Yu Gothic UI",sans-serif;
+    font-size:13px; color:#8a8a80; pointer-events:none; line-height:1.7;
+    text-shadow:0 0 5px #fff, 0 0 5px #fff;
+  }
+  #stats { color:#5c6b3c; font-weight:bold; font-size:14px; }
+  #flash {
+    position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none;
+    transition:opacity .18s ease;
+  }
+  #stagelabel {
+    position:fixed; left:0; right:0; top:38%; text-align:center; pointer-events:none;
+    font-family:"Yu Gothic UI",sans-serif; font-size:44px; font-weight:bold;
+    color:#3a3a33; opacity:0; transition:opacity .3s ease; letter-spacing:.15em;
+    text-shadow:0 0 18px #fff;
+  }
+  .edge {
+    position:fixed; pointer-events:none;
+    font-family:"Yu Gothic UI",sans-serif; font-size:24px; font-weight:bold;
+    color:#a89f93; opacity:.4; transition:opacity .25s ease, color .25s ease;
+    text-shadow:0 0 8px #fff, 0 0 8px #fff;
+  }
+  #edgeL { left:10px; top:50%; transform:translateY(-50%); }
+  #edgeR { right:10px; top:50%; transform:translateY(-50%); }
+  #edgeT { top:6px; left:50%; transform:translateX(-50%); }
+  #edgeB { bottom:6px; left:50%; transform:translateX(-50%); }
+  .edge.hot { opacity:1; color:#7a6f5f; }
+  .edge.off { opacity:0; }
+  #minimap {
+    position:fixed; left:14px; bottom:14px; display:grid;
+    grid-template-columns:repeat(4, 20px); grid-auto-rows:20px; gap:3px;
+    padding:6px; background:rgba(255,255,255,.6); border-radius:6px;
+    box-shadow:0 1px 6px rgba(0,0,0,.10); pointer-events:none;
+  }
+  .mm {
+    border-radius:3px; background:#f0eee2; border:1px solid #d8d4c4;
+    transition:background .3s ease;
+  }
+  .mm.hq { background:#d96b5f; border-color:#c05a4f; }
+  .mm.cleared { background:#c9c6bb; border-color:#b7b3a6; }
+  .mm.cur { outline:2px solid #8fa065; outline-offset:1px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="ui">
+  クリック: 成体に移動指示(至近の獲物だけ自動で反応) / ホイール: ズーム微調整<br>
+  枠の外側をクリックで隣のエリアへ(◀▲▼▶の方向のみ) / 岩は弾を防ぐ<br>
+  ミニマップ: 赤=敵本拠地(制圧でクリア) 緑枠=現在地 グレー=制圧済み<br>
+  仲間の死骸=HP上限+1 / カメムシの死体=子ども+3 / 赤い隊長は子ども4匹以上で押さえ込める<br>
+  <span id="stats"></span>
+</div>
+<div id="stagelabel"></div>
+<div id="edgeL" class="edge">◀</div>
+<div id="edgeR" class="edge">▶</div>
+<div id="edgeT" class="edge">▲</div>
+<div id="edgeB" class="edge">▼</div>
+<div id="minimap"></div>
+<div id="flash"></div>
+<script type="module">
+import * as THREE from 'three';
+
+// ================= stage geometry =================
+const STAGE_HALF_W = 20;   // x: -20..20
+const STAGE_HALF_D = 12;   // z: -12..12
+// ---- 4x4 グリッドワールド。開始(0,0)=ミニマップ左上、敵本拠地(3,3)=右下 ----
+// カメラは +z 側から見下ろす: 画面右=+x(col+1)、画面下=+z(row+1)
+const GRID = 4;
+const HQ_COL = 3, HQ_ROW = 3;
+let stageCol = 0, stageRow = 0;
+const skey = (c, r) => c + ',' + r;
+const stageDist = (c, r) => c + r;   // 開始からのマンハッタン距離 = 難度
+function mulberry32(a) {             // ステージ固定シード乱数(再訪しても同じ地形)
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// terrain uses a per-stage seed offset so each screen looks different
+let terrainOff = 0;
+function groundH(x, z) {
+  const o = terrainOff;
+  return 0.50 * Math.sin((x + o) * 0.28) * Math.cos(z * 0.24)
+       + 0.20 * Math.sin((x + o) * 0.71 + 1.3) * Math.sin(z * 0.63 + 0.4)
+       + 0.07 * Math.sin((x + o) * 1.9 + 4.1) * Math.cos(z * 1.7 + 2.0);
+}
+
+// ================= renderer / scene =================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.28;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf7f6f2);
+
+// ---- fixed top-down orthographic camera (old-school single-screen) ----
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
+const ELEV = 76 * Math.PI / 180;           // 76° from horizontal ≈ ほぼ真上、わずかに傾け
+let zoomScale = 1.18;                      // デフォルトからやや引き
+const camDir = new THREE.Vector3(0, Math.sin(ELEV), Math.cos(ELEV));   // +z側から: 画面右=+x
+function frameCamera() {
+  const aspect = innerWidth / innerHeight;
+  const halfX = (STAGE_HALF_W + 2.5) * zoomScale;
+  camera.left = -halfX; camera.right = halfX;
+  camera.top = halfX / aspect; camera.bottom = -halfX / aspect;
+  camera.position.copy(camDir).multiplyScalar(120);   // 距離は正射影では見た目に無関係
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+}
+frameCamera();
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd6d6cc, 0.9));
+const sun = new THREE.DirectionalLight(0xfffbee, 1.55);
+sun.position.set(14, 26, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
+sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
+sun.shadow.camera.far = 90;
+sun.shadow.bias = -0.0004;
+scene.add(sun, sun.target);
+
+// ---- ground (rebuilt on stage change so terrain varies) ----
+const groundGeo = new THREE.PlaneGeometry(STAGE_HALF_W * 2 + 8, STAGE_HALF_D * 2 + 8, 120, 80);
+groundGeo.rotateX(-Math.PI / 2);
+const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
+ground.receiveShadow = true;
+ground.name = 'ground';
+scene.add(ground);
+// stage border ring
+const borderMat = new THREE.LineBasicMaterial({ color: 0xd9c7c7, transparent: true, opacity: 0.6 });
+const bpts = [
+  [-STAGE_HALF_W, -STAGE_HALF_D], [STAGE_HALF_W, -STAGE_HALF_D],
+  [STAGE_HALF_W, STAGE_HALF_D], [-STAGE_HALF_W, STAGE_HALF_D], [-STAGE_HALF_W, -STAGE_HALF_D],
+].map(([x, z]) => new THREE.Vector3(x, 0, z));
+const border = new THREE.Line(new THREE.BufferGeometry().setFromPoints(bpts), borderMat);
+scene.add(border);
+
+// ---- 行き止まりの辺(グリッド外周)は濃い線で塞ぐ ----
+const blockMat = new THREE.LineBasicMaterial({ color: 0x7a736a, transparent: true, opacity: 0.85 });
+function sidePts(side) {
+  const pts = [], N = 24;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    if (side === 'L') pts.push(new THREE.Vector3(-STAGE_HALF_W, 0, -STAGE_HALF_D + t * STAGE_HALF_D * 2));
+    if (side === 'R') pts.push(new THREE.Vector3(STAGE_HALF_W, 0, -STAGE_HALF_D + t * STAGE_HALF_D * 2));
+    if (side === 'T') pts.push(new THREE.Vector3(-STAGE_HALF_W + t * STAGE_HALF_W * 2, 0, -STAGE_HALF_D));
+    if (side === 'B') pts.push(new THREE.Vector3(-STAGE_HALF_W + t * STAGE_HALF_W * 2, 0, STAGE_HALF_D));
+  }
+  return pts;
+}
+const sideLines = {};
+for (const s of ['L', 'R', 'T', 'B']) {
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(sidePts(s)), blockMat);
+  line.visible = false;
+  scene.add(line);
+  sideLines[s] = { line, pts: sidePts(s) };
+}
+function updateBlockedSides() {   // 画面上(T)=row-1、画面下(B)=row+1
+  sideLines.L.line.visible = stageCol === 0;
+  sideLines.R.line.visible = stageCol === GRID - 1;
+  sideLines.T.line.visible = stageRow === 0;
+  sideLines.B.line.visible = stageRow === GRID - 1;
+}
+
+// ---- 岩・要塞壁(遮蔽物): 弾を防ぎ、移動は押し出しで迂回させる ----
+const hqGapAngles = [];   // 本拠地の開口部角度(守備隊の配置に使う)
+const rocks = [];   // {x, z, r}
+const rockGroup = new THREE.Group();
+scene.add(rockGroup);
+const rockMat = new THREE.MeshStandardMaterial({ color: 0xd9d3c3, roughness: 0.95 });
+function addRock(x, z, r, h, rng) {
+  const geo = new THREE.CylinderGeometry(r * (0.8 + rng() * 0.25), r, h, 7);
+  const m = new THREE.Mesh(geo, rockMat);
+  m.position.set(x, groundH(x, z) + h / 2 - 0.06, z);
+  m.rotation.y = rng() * Math.PI * 2;
+  m.castShadow = m.receiveShadow = true;
+  rockGroup.add(m);
+  rocks.push({ x, z, r, mesh: m });
+}
+function buildRocks() {
+  for (const rk of rocks) rockGroup.remove(rk.mesh);
+  rocks.length = 0;
+  const d = stageDist(stageCol, stageRow);
+  const rng = mulberry32(stageCol * 97 + stageRow * 131 + 7);
+  hqGapAngles.length = 0;
+  if (stageCol === HQ_COL && stageRow === HQ_ROW) {
+    // 敵本拠地: 中央の要塞壁(開口部2箇所)+外周に散らばる岩
+    const R = 6.4, segs = 14;
+    const gap1 = Math.floor(rng() * segs), gap2 = (gap1 + 7) % segs;
+    hqGapAngles.push((gap1 + 1) / segs * Math.PI * 2, (gap2 + 0.5) / segs * Math.PI * 2);
+    for (let i = 0; i < segs; i++) {
+      if (i === gap1 || i === (gap1 + 1) % segs || i === gap2) continue;
+      const a = i / segs * Math.PI * 2;
+      addRock(Math.sin(a) * R, Math.cos(a) * R * 0.75, 1.2, 0.95, rng);
+    }
+    for (let i = 0; i < 4; i++)
+      addRock((rng() * 2 - 1) * (STAGE_HALF_W - 4), (rng() * 2 - 1) * (STAGE_HALF_D - 3), 0.8 + rng() * 0.6, 0.55, rng);
+  } else {
+    // 序盤は白紙のまま(d>=2で初めて岩が登場、奥ほど増える)
+    const n = d < 2 ? 0 : 2 + (d - 2) * 2;
+    for (let i = 0; i < n; i++) {
+      const x = (rng() * 2 - 1) * (STAGE_HALF_W - 3), z = (rng() * 2 - 1) * (STAGE_HALF_D - 2.5);
+      if (Math.hypot(x, z) < 3.2) continue;   // 中央は開けておく
+      addRock(x, z, 0.7 + rng() * 1.0, 0.45 + rng() * 0.5, rng);
+    }
+  }
+}
+function pushOutOfRocks(pos, pad) {
+  for (const rk of rocks) {
+    const dx = pos.x - rk.x, dz = pos.z - rk.z;
+    const min = rk.r + pad, d2 = dx * dx + dz * dz;
+    if (d2 < min * min && d2 > 1e-6) {
+      const dd = Math.sqrt(d2), k = (min - dd) / dd;
+      pos.x += dx * k; pos.z += dz * k;
+    }
+  }
+}
+function rockAt(x, z, pad = 0.5) { return rocks.some(rk => Math.hypot(x - rk.x, z - rk.z) < rk.r + pad); }
+
+function rebuildGround() {
+  const p = groundGeo.attributes.position, colors = [];
+  const cA = new THREE.Color(0xfdfcf9), cB = new THREE.Color(0xefeee5);
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), h = groundH(x, z);
+    p.setY(i, h);
+    const c = cA.clone().lerp(cB, THREE.MathUtils.clamp(0.5 - h * 0.55, 0, 1));
+    colors.push(c.r, c.g, c.b);
+  }
+  p.needsUpdate = true;
+  groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  groundGeo.computeVertexNormals();
+  for (const b of bpts) b.y = groundH(b.x, b.z) + 0.02;
+  border.geometry.setFromPoints(bpts);
+  if (typeof sideLines !== 'undefined') {
+    for (const s of ['L', 'R', 'T', 'B']) {
+      for (const p of sideLines[s].pts) p.y = groundH(p.x, p.z) + 0.04;
+      sideLines[s].line.geometry.setFromPoints(sideLines[s].pts);
+    }
+  }
+}
+rebuildGround();
+
+// ================= helpers =================
+const UP = new THREE.Vector3(0, 1, 0);
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _seg = new THREE.Vector3();
+function placeSeg(mesh, a, b) {
+  _seg.subVectors(b, a);
+  const len = Math.max(_seg.length(), 1e-4);
+  mesh.position.copy(a).addScaledVector(_seg, 0.5);
+  mesh.quaternion.setFromUnitVectors(UP, _seg.divideScalar(len));
+  mesh.scale.y = len;
+}
+function smoothAngle(cur, tgt, k) {
+  let d = tgt - cur;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return cur + d * k;
+}
+function clampStage(pos) {
+  pos.z = THREE.MathUtils.clamp(pos.z, -STAGE_HALF_D + 0.4, STAGE_HALF_D - 0.4);
+}
+// フレネル風リムライト: 視線と直交する面ほど白く光り、半透明の「ゼリー感」を出す
+function addRim(mat, strength) {
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace(
+      '#include <dithering_fragment>',
+      `#include <dithering_fragment>
+       float rim = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewPosition))), 2.5);
+       gl_FragColor.rgb += rim * ${strength.toFixed(2)} * vec3(0.90, 1.00, 0.85);
+       gl_FragColor.a = min(gl_FragColor.a + rim * 0.25, 1.0);`
+    );
+  };
+  return mat;
+}
+
+// ================= harvestman =================
+// 実物準拠: 第2脚(pair 1)は最長だが歩行に使わず、前方を掃く「触角」。
+// 残り6本(pair 0,2,3)は交互三脚歩容(alternating tripod gait)で歩く。
+const D = Math.PI / 180;
+const LEG_PAIRS = [
+  { ang: 34 * D,  r: 2.45, len: 4.2, sensory: false },
+  { ang: 60 * D,  r: 3.20, len: 5.6, sensory: true  },  // 第2脚=触角(最長)
+  { ang: 112 * D, r: 2.55, len: 4.4, sensory: false },
+  { ang: 148 * D, r: 2.25, len: 3.9, sensory: false },
+];
+// 三脚グループ: 前左/中右/後左 と 前右/中左/後右
+function tripodGroup(side, pair) {           // side:+1右 -1左
+  const g = (pair === 2) ? (side > 0 ? 0 : 1) : (side > 0 ? 1 : 0);
+  return g;
+}
+
+const spiders = [];
+
+class Harvestman {
+  constructor(x, z, scale = 1, tint = 0x8fa065, opts = {}) {
+    this.s = scale;
+    this.pos = new THREE.Vector3(x, 0, z);
+    this.vel = new THREE.Vector3();
+    this.yaw = Math.random() * Math.PI * 2;
+    this.speed = opts.speed || (scale >= 1 ? 3.0 : 2.6);
+    this.kind = opts.kind || (scale >= 1 ? 'adult' : 'child');
+    this.bodyH = 1.05 * scale;
+    this.bodyY = groundH(x, z) + this.bodyH;
+    this.target = new THREE.Vector3(x, 0, z);
+    this.retargetT = 0;
+    this.isAdult = scale >= 1;
+    this.hp = opts.hp || (scale >= 1 ? 3 : 2);   // 成体は初期3(死骸を食べて上限を伸ばす)
+    this.maxHp = this.hp;
+    this.invulnT = 0;            // 被弾後の無敵時間(成体0.9s / 子ども0.3s)
+    this.senseRate = 2.3 + Math.random() * 0.9;   // 触角の掃引速度(個体差)
+    this.tapRate = 4.4 + Math.random() * 1.6;     // 触角の叩き速度(個体差)
+    this.nextSwing = Math.random() < 0.5 ? 0 : 1; // 次に振り出す三脚グループ(初期位相も個体差)
+    this.swinging = false;
+    // 歩容連動の胴体運動(表示専用、this.posは動かさない)
+    this.supportGroup = 1;       // いま体重が乗っている三脚
+    this.contactAge = 0;         // 最後の支持交替からの経過
+    this.halfCycle = 0.22;       // 支持期の推定長(着地間隔から適応)
+    this.lastLand = -1;
+    this.sagT = 1;               // 着地直後の沈み(1=終了)
+    this.gaitSeed = Math.random();
+    this.cycleJitter = 0.92 + Math.random() * 0.16;
+    this.suppY = groundH(x, z); this.suppPitch = 0; this.suppRoll = 0;
+    this.prey = null; this.pounceT = 0;           // 捕食プレス(押さえ込み)
+    // 成体は素早く押さえて即取り込み、子どもはその場でじっくり捕食してから子どもが生まれる
+    this.pounceDur = scale >= 1 ? 0.38 : 2.0 + Math.random() * 0.6;
+    this.unfoldT = scale >= 1 ? 1 : 0;            // 生成直後の起き上がり(子ども)
+    if (this.unfoldT < 1) this.bodyY = groundH(x, z) + this.bodyH * 0.5;  // 低い姿勢から展開
+
+    this.group = new THREE.Group();
+    scene.add(this.group);
+
+    const legMat = addRim(new THREE.MeshStandardMaterial({
+      color: tint, roughness: 0.5, transparent: true, opacity: 0.7,
+    }), 0.30);
+    const senseMat = addRim(new THREE.MeshStandardMaterial({
+      color: new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.25),
+      roughness: 0.5, transparent: true, opacity: 0.55,
+    }), 0.38);
+    const bodyMat = addRim(new THREE.MeshStandardMaterial({
+      color: new THREE.Color(tint).multiplyScalar(0.8), roughness: 0.35,
+      transparent: true, opacity: 0.94,
+    }), 0.22);
+    this.legMat = legMat; this.senseMat = senseMat; this.bodyMat = bodyMat;
+
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.17 * scale, 18, 14), bodyMat);
+    body.scale.set(1, 0.76, 1.3);
+    body.castShadow = true;
+    this.group.add(body);
+
+    const femurGeo = new THREE.CylinderGeometry(0.022 * scale, 0.032 * scale, 1, 6);
+    const tibiaGeo = new THREE.CylinderGeometry(0.008 * scale, 0.020 * scale, 1, 6);
+    const kneeGeo = new THREE.SphereGeometry(0.026 * scale, 8, 6);
+
+    this.legs = [];
+    for (const side of [1, -1]) {
+      for (let p = 0; p < 4; p++) {
+        const def = LEG_PAIRS[p];
+        const mat = def.sensory ? senseMat : legMat;
+        const femur = new THREE.Mesh(femurGeo, mat);
+        const tibia = new THREE.Mesh(tibiaGeo, mat);
+        const knee = new THREE.Mesh(kneeGeo, mat);
+        femur.castShadow = tibia.castShadow = !def.sensory;
+        scene.add(femur, tibia, knee);
+        this.legs.push({
+          ang: def.ang * side, pair: p, side, sensory: def.sensory,
+          grp: def.sensory ? -1 : tripodGroup(side, p),
+          restR: def.r * scale,
+          L1: def.len * 0.46 * scale,
+          L2: def.len * 0.60 * scale,
+          foot: new THREE.Vector3(),
+          stepping: false, stepT: 0, stepDur: 0.14, stepFrom: new THREE.Vector3(),
+          // 三脚内の振り出し順: 中脚III→前脚I→後脚IV を数msずつずらす(個体ごとに固定)
+          stagger: (p === 2 ? 0 : p === 0 ? 0.008 : 0.016) + Math.random() * 0.006,
+          delay: 0,
+          phase: Math.random() * Math.PI * 2,
+          femur, tibia, knee,
+        });
+      }
+    }
+    for (const leg of this.legs) { this.legHome(leg, leg.foot); }
+  }
+
+  legHome(leg, out) {
+    const a = this.yaw + leg.ang;
+    out.set(this.pos.x + Math.sin(a) * leg.restR, 0, this.pos.z + Math.cos(a) * leg.restR);
+    out.y = groundH(out.x, out.z);
+    return out;
+  }
+
+  translate(dx, dz) {
+    this.pos.x += dx; this.pos.z += dz;
+    this.target.x += dx; this.target.z += dz;
+    for (const leg of this.legs) { leg.foot.x += dx; leg.foot.z += dz; }
+  }
+
+  update(dt, time) {
+    // --- steering ---
+    _v1.subVectors(this.target, this.pos); _v1.y = 0;
+    const dist = _v1.length();
+    if (dist > 0.12) _v1.divideScalar(dist).multiplyScalar(this.speed);
+    else _v1.set(0, 0, 0);
+    this.vel.lerp(_v1, 1 - Math.exp(-5 * dt));
+    this.pos.addScaledVector(this.vel, dt);
+    // クランプ: 移動意図のある成体だけ、その方向の枠外(見切れ位置)まで出られる
+    let xMin = -STAGE_HALF_W + 0.3, xMax = STAGE_HALF_W - 0.3;
+    let zMin = -STAGE_HALF_D + 0.4, zMax = STAGE_HALF_D - 0.4;
+    if (this.isAdult && stageIntent) {
+      if (stageIntent.dx > 0) xMax = STAGE_HALF_W + 2.2;
+      else if (stageIntent.dx < 0) xMin = -STAGE_HALF_W - 2.2;
+      else if (stageIntent.dz > 0) zMax = STAGE_HALF_D + 2.2;
+      else if (stageIntent.dz < 0) zMin = -STAGE_HALF_D - 2.2;
+    }
+    this.pos.x = THREE.MathUtils.clamp(this.pos.x, xMin, xMax);
+    this.pos.z = THREE.MathUtils.clamp(this.pos.z, zMin, zMax);
+    pushOutOfRocks(this.pos, 0.30 * this.s + 0.12);   // 岩は滑って迂回
+    if (this.invulnT > 0) this.invulnT -= dt;
+    const speed = this.vel.length();
+    const speedNorm = THREE.MathUtils.clamp(speed / this.speed, 0, 1);
+    if (speed > 0.2)
+      this.yaw = smoothAngle(this.yaw, Math.atan2(this.vel.x, this.vel.z), 1 - Math.exp(-7 * dt));
+
+    // --- gait: alternating tripod (walking legs only) ---
+    const walk = this.legs.filter(l => !l.sensory);
+    if (!this.swinging) {
+      const grp = this.nextSwing;
+      let maxErr = 0;
+      for (const leg of walk) if (leg.grp === grp) {
+        this.legHome(leg, _v2);
+        maxErr = Math.max(maxErr, leg.foot.distanceTo(_v2));
+      }
+      const thresh = 0.42 * this.s;
+      if (maxErr > thresh && speed > 0.15) {
+        for (const leg of walk) if (leg.grp === grp) {
+          leg.stepping = true; leg.stepT = 0;
+          leg.stepDur = THREE.MathUtils.clamp(0.34 / (1 + speed), 0.10, 0.20) * (0.97 + Math.random() * 0.06);
+          leg.delay = leg.stagger;
+          leg.stepFrom.copy(leg.foot);
+        }
+        this.swinging = true;
+      }
+    }
+    let anySwing = false;
+    for (const leg of walk) {
+      if (!leg.stepping) continue;
+      anySwing = true;
+      if (leg.delay > 0) { leg.delay -= dt; continue; }   // 三脚内の微小時差
+      leg.stepT += dt / leg.stepDur;
+      const t = Math.min(leg.stepT, 1);
+      this.legHome(leg, _v2);
+      _v2.addScaledVector(this.vel, leg.stepDur * 1.0);    // 着地予測(前方へ)
+      _v2.y = groundH(_v2.x, _v2.z);
+      // サイクロイド系: 離地・着地とも足先速度が0になり跳ねない
+      const travel = t - Math.sin(Math.PI * 2 * t) / (Math.PI * 2);
+      leg.foot.lerpVectors(leg.stepFrom, _v2, travel);
+      leg.foot.y += (0.24 + 0.18 * speedNorm) * this.s * (1 - Math.cos(Math.PI * 2 * t)) * 0.5;
+      if (leg.stepT >= 1) { leg.foot.copy(_v2); leg.stepping = false; }
+    }
+    if (this.swinging && !anySwing) {
+      // 三脚の全脚が着地 = 支持交替イベント。胴体運動の基準にする
+      this.swinging = false;
+      this.supportGroup = this.nextSwing;
+      this.nextSwing = 1 - this.nextSwing;
+      if (this.lastLand >= 0)
+        this.halfCycle = THREE.MathUtils.clamp(
+          THREE.MathUtils.lerp(this.halfCycle, time - this.lastLand, 0.25), 0.12, 0.32);
+      this.lastLand = time;
+      this.contactAge = 0;
+      this.sagT = 0;                     // 着地直後の沈み開始
+    }
+    this.contactAge += dt;
+
+    // --- sensory legs (pair II): sweep & tap ahead like antennae ---
+    const sinY = Math.sin(this.yaw), cosY = Math.cos(this.yaw);
+    for (const leg of this.legs) {
+      if (!leg.sensory) continue;
+      const ph = time * this.senseRate + (leg.side > 0 ? 0 : Math.PI * 0.85) + leg.phase;
+      const sweep = Math.sin(ph) * (0.45 + 0.18 * Math.sin(leg.phase));   // 左右に掃く(振幅も個体差)
+      const reach = (leg.L1 + leg.L2) * 0.82;
+      const outAng = this.yaw + leg.side * 0.42 + sweep;  // 前方外側〜内側を往復
+      const fx = this.pos.x + Math.sin(outAng) * reach;
+      const fz = this.pos.z + Math.cos(outAng) * reach;
+      const tap = 0.5 + 0.5 * Math.sin(time * this.tapRate + leg.phase * 1.3 + (leg.side > 0 ? 0 : 1.7));
+      const tapH = 0.02 + 0.85 * Math.pow(tap, 1.6);   // 低い位相ではほぼ床に触れる(本当にtapする)
+      leg.foot.set(fx, groundH(fx, fz) + tapH * this.s, fz);
+    }
+
+    // --- body posture: 支持脚(stance)だけから支持面を作る。swing脚に胴体が釣られない ---
+    let avgY = 0, frontY = 0, backY = 0, leftY = 0, rightY = 0;
+    let n = 0, fn = 0, bn = 0, ln = 0, rn = 0;
+    for (const leg of walk) {
+      if (leg.stepping) continue;
+      avgY += leg.foot.y; n++;
+      if (leg.pair < 2) { frontY += leg.foot.y; fn++; } else { backY += leg.foot.y; bn++; }
+      if (leg.side > 0) { rightY += leg.foot.y; rn++; } else { leftY += leg.foot.y; ln++; }
+    }
+    if (n >= 3 && fn && bn && ln && rn) {   // 支持面が作れる時だけ更新、不足時は直前を保持
+      this.suppY = avgY / n;
+      this.suppPitch = backY / bn - frontY / fn;
+      this.suppRoll = leftY / ln - rightY / rn;
+    }
+
+    // --- 歩容連動の胴体運動(全て表示専用、this.posは不変) ---
+    const gate = THREE.MathUtils.smoothstep(speedNorm, 0.05, 0.3);   // Idleでは消える
+    const u = THREE.MathUtils.clamp(this.contactAge / (this.halfCycle * this.cycleJitter), 0, 1);
+    const arch = 0.5 - 0.5 * Math.cos(Math.PI * 2 * u);   // 支持交替で低く、支持期中央で高く
+    const downAmp = (0.030 + 0.050 * speedNorm) * this.s * gate;
+    const upAmp   = (0.040 + 0.045 * speedNorm) * this.s * gate;
+    let bodyVert = -downAmp + (downAmp + upAmp) * arch
+                 + (1 - gate) * Math.sin(time * 1.7 + this.gaitSeed * 7) * 0.004 * this.s;  // Idleは微かな呼吸だけ
+    if (this.sagT < 1) {   // 着地直後、細い脚に荷重が乗る沈み
+      this.sagT = Math.min(this.sagT + dt / 0.13, 1);
+      bodyVert -= 0.025 * this.s * (1 - this.sagT) * gate;
+    }
+    // 支持側後脚と反対方向への横揺れ(lurch)
+    const lateral = (this.supportGroup === 0 ? 1 : -1)
+                  * (0.030 + 0.055 * speedNorm) * this.s * gate * Math.sin(Math.PI * u);
+
+    // 捕食プレス: 素早く沈み、捕食中は低いまま保持し、最後に立ち上がる(台形カーブ)
+    let hMul = 1;
+    if (this.prey) {
+      const pt = Math.min(this.pounceT, 1);
+      const edge = this.isAdult ? 0.22 : 0.10;   // 沈み/立ち上がりに使う割合
+      hMul = 1 - 0.85 * THREE.MathUtils.clamp(Math.min(pt, 1 - pt) / edge, 0, 1);
+    }
+    // 被弾クラウチ(表示のみ)
+    if (this.invulnT > 0) {
+      const e = 0.9 - this.invulnT;
+      const k = e < 0.08 ? e / 0.08 : Math.max(1 - (e - 0.08) / 0.28, 0);
+      bodyVert -= 0.13 * this.s * k;
+    }
+    // 生成直後の起き上がり(子ども)
+    if (this.unfoldT < 1) {
+      this.unfoldT = Math.min(this.unfoldT + dt / 0.35, 1);
+      hMul *= 0.55 + 0.45 * this.unfoldT;
+    }
+
+    const targetY = this.suppY + this.bodyH * hMul + bodyVert;
+    this.bodyY += (targetY - this.bodyY) * (1 - Math.exp(-9 * dt));
+
+    const rX = Math.cos(this.yaw), rZ = -Math.sin(this.yaw);   // 右方向(横揺れは表示オフセットのみ)
+    this.group.position.set(this.pos.x + rX * lateral, this.bodyY, this.pos.z + rZ * lateral);
+    this.group.rotation.order = 'YXZ';
+    this.group.rotation.y = this.yaw;
+    this.group.rotation.x = THREE.MathUtils.clamp(this.suppPitch * 0.10, -0.25, 0.25);
+    this.group.rotation.z = THREE.MathUtils.clamp(this.suppRoll * 0.10, -0.25, 0.25);
+    this.group.updateMatrixWorld();
+
+    // --- IK + render ---
+    const bodyR = 0.15 * this.s;
+    for (const leg of this.legs) {
+      _v1.set(Math.sin(leg.ang) * bodyR, 0, Math.cos(leg.ang) * bodyR);
+      this.group.localToWorld(_v1);
+      const S = _v1, F = _v3.copy(leg.foot);
+      _v2.subVectors(F, S);
+      let d = _v2.length();
+      const maxL = (leg.L1 + leg.L2) * 0.985;
+      if (d > maxL) { F.copy(S).addScaledVector(_v2, maxL / d); _v2.subVectors(F, S); d = maxL; }
+      _v2.divideScalar(d);
+      const ox = F.x - this.pos.x, oz = F.z - this.pos.z;
+      const ol = Math.max(Math.hypot(ox, oz), 1e-4);
+      const upOut = new THREE.Vector3(ox / ol * 0.35, 1, oz / ol * 0.35).normalize();
+      upOut.addScaledVector(_v2, -upOut.dot(_v2));
+      if (upOut.lengthSq() < 1e-6) upOut.set(0, 1, 0);
+      upOut.normalize();
+      const a = (leg.L1 * leg.L1 - leg.L2 * leg.L2 + d * d) / (2 * d);
+      const h = Math.sqrt(Math.max(leg.L1 * leg.L1 - a * a, 0));
+      const K = new THREE.Vector3().copy(S).addScaledVector(_v2, a).addScaledVector(upOut, h);
+      placeSeg(leg.femur, S, K);
+      placeSeg(leg.tibia, K, F);
+      leg.knee.position.copy(K);
+    }
+  }
+
+  dispose() {
+    scene.remove(this.group);
+    for (const leg of this.legs) scene.remove(leg.femur, leg.tibia, leg.knee);
+  }
+}
+
+// ================= humans =================
+const humans = [];
+const humanBodyGeo = new THREE.CylinderGeometry(0.05, 0.07, 0.26, 8);
+const humanHeadGeo = new THREE.SphereGeometry(0.06, 10, 8);
+const humanMat = new THREE.MeshStandardMaterial({ color: 0x33312e, roughness: 0.85 });
+// 武器3種: 見た目(体色・銃の形)で強さがわかる段階強化
+const WEAPONS = {
+  pistol:  { name: 'pistol',  range: 13,  cd: [1.6, 1.8], speed: 11,  life: 2.2, pellets: 1, spread: 0,    gun: [0.03, 0.03, 0.16],
+             mat: new THREE.MeshStandardMaterial({ color: 0x5a2b28, roughness: 0.7 }) },
+  rifle:   { name: 'rifle',   range: 18,  cd: [2.3, 1.5], speed: 17,  life: 2.4, pellets: 1, spread: 0,    gun: [0.025, 0.025, 0.32],
+             mat: new THREE.MeshStandardMaterial({ color: 0x3e4a58, roughness: 0.6 }) },
+  shotgun: { name: 'shotgun', range: 7.5, cd: [2.6, 1.6], speed: 9.5, life: 0.8, pellets: 3, spread: 0.24, gun: [0.05, 0.05, 0.20],
+             mat: new THREE.MeshStandardMaterial({ color: 0x8a5a30, roughness: 0.65 }) },
+};
+const gunMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+// ユニーク敵「隊長」: 赤くて大きい。執拗に成体だけを狙い、3点バーストで撃つ。
+// 子どもが4匹以上いないと押さえ込めない(群れの数がボスを倒す鍵)
+const CAPTAIN_WPN = { name: 'captain', range: 15, cd: [1.9, 1.0], speed: 14, life: 2.0, pellets: 1, spread: 0, gun: [0.05, 0.05, 0.36],
+  mat: new THREE.MeshStandardMaterial({ color: 0xb03a30, roughness: 0.55 }) };
+
+// 味方が射線上にいたら撃たない(前列・後列の位置関係に意味を持たせる)
+function allyBlocks(h, tx, tz) {
+  const dx = tx - h.pos.x, dz = tz - h.pos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-4) return false;
+  const nx = dx / len, nz = dz / len;
+  for (const o of humans) {
+    if (o === h || o.caught) continue;
+    const ox = o.pos.x - h.pos.x, oz = o.pos.z - h.pos.z;
+    const t = ox * nx + oz * nz;
+    if (t <= 0.2 || t >= len) continue;
+    const px = ox - nx * t, pz = oz - nz * t;
+    if (px * px + pz * pz < 0.09) return true;
+  }
+  return false;
+}
+
+class Human {
+  constructor(x, z, weapon, brave = false) {
+    this.pos = new THREE.Vector3(x, 0, z);
+    this.caught = false;   // 押さえ込まれ中(捕食プレスの対象)
+    this.wanderT = 0;
+    this.dir = Math.random() * Math.PI * 2;
+    this.weapon = weapon || null;   // WEAPONS のエントリ or null(丸腰)
+    this.brave = brave;             // 守備隊: 逃げずに撃ち続ける
+    this.captain = weapon === CAPTAIN_WPN;
+    this.cell = null; this.slotIdx = 0; this.slotSide = 0;   // 編成(braveのみ使用)
+    this.burstLeft = 0; this.burstT = 0;                     // 隊長の連射
+    this.fireCd = 1.5 + Math.random() * 2;
+    this.group = new THREE.Group();
+    const mat = this.weapon ? this.weapon.mat : humanMat;
+    const body = new THREE.Mesh(humanBodyGeo, mat); body.position.y = 0.13;
+    const head = new THREE.Mesh(humanHeadGeo, mat); head.position.y = 0.3;
+    body.castShadow = head.castShadow = true;
+    this.group.add(body, head);
+    if (this.weapon) {
+      const g = this.weapon.gun;
+      const gun = new THREE.Mesh(new THREE.BoxGeometry(g[0], g[1], g[2]), gunMat);
+      gun.position.set(0.06, 0.16, 0.06);
+      this.group.add(gun);
+      this.gun = gun;
+    }
+    if (this.captain) this.group.scale.setScalar(1.55);   // 隊長はデカくて赤い
+    scene.add(this.group);
+  }
+  update(dt, time) {
+    if (this.caught) {   // 押さえ込まれている: 逃げも撃ちもできず、もがくだけ
+      const y = groundH(this.pos.x, this.pos.z);
+      this.group.position.set(this.pos.x, y + Math.abs(Math.sin(time * 28)) * 0.03, this.pos.z);
+      return;
+    }
+    // --- ターゲット: 隊長は常に成体を狙う。他は最寄り ---
+    let nearest = null, nd = 1e9;
+    if (this.captain) { nearest = adult; nd = adult.pos.distanceTo(this.pos); }
+    else for (const sp of spiders) {
+      const d = sp.pos.distanceTo(this.pos);
+      if (d < nd) { nd = d; nearest = sp; }
+    }
+    // 編成兵は担当区画で標的を分散(左スロットは左の敵、右は右)
+    let shootTarget = nearest, sd = nd;
+    if (this.cell && this.weapon && !this.captain) {
+      const fx = Math.sin(this.cell.facing), fz = Math.cos(this.cell.facing);
+      let best = null, bs = 1e9;
+      for (const sp of spiders) {
+        const d = sp.pos.distanceTo(this.pos);
+        if (d > this.weapon.range) continue;
+        const rx = sp.pos.x - this.cell.ax, rz = sp.pos.z - this.cell.az;
+        const side = Math.sign(rx * fz - rz * fx);
+        const score = d + (this.slotSide !== 0 && side !== 0 && side !== this.slotSide ? 3 : 0);
+        if (score < bs) { bs = score; best = sp; }
+      }
+      if (best) { shootTarget = best; sd = best.pos.distanceTo(this.pos); }
+    }
+    let speed = 0.55;
+    const scared = nearest && nd < 5;
+    // --- 射撃: 射程内なら撃つ(braveは怯えていなくても撃つ)。味方越しには撃たない ---
+    if (this.weapon) {
+      this.fireCd -= dt;
+      if (this.burstLeft > 0) {   // 隊長の3点バースト
+        this.burstT -= dt;
+        if (this.burstT <= 0 && nearest) {
+          this.burstT = 0.1; this.burstLeft--;
+          spawnBullet(this.pos, nearest, this.weapon, (Math.random() - 0.5) * 0.06);
+        }
+      }
+      if (this.fireCd <= 0 && shootTarget && sd < this.weapon.range && (scared || this.brave || this.captain)
+          && !allyBlocks(this, shootTarget.pos.x, shootTarget.pos.z)) {
+        this.fireCd = this.weapon.cd[0] + Math.random() * this.weapon.cd[1];
+        for (let i = 0; i < this.weapon.pellets; i++) {
+          const off = this.weapon.pellets > 1 ? (i - (this.weapon.pellets - 1) / 2) * this.weapon.spread : 0;
+          spawnBullet(this.pos, shootTarget, this.weapon, off);
+        }
+        if (this.captain) { this.burstLeft = 2; this.burstT = 0.1; }
+        this.group.lookAt(shootTarget.pos.x, this.pos.y, shootTarget.pos.z);
+      }
+    }
+    // --- 移動 ---
+    if (this.captain) {
+      // 執拗に成体を追い、射程内では距離を保つ
+      if (nd > 8) { this.dir = Math.atan2(adult.pos.x - this.pos.x, adult.pos.z - this.pos.z); speed = 1.05; }
+      else if (nd < 4) { this.dir = Math.atan2(this.pos.x - adult.pos.x, this.pos.z - adult.pos.z); speed = 0.85; }
+      else {
+        this.wanderT -= dt;
+        if (this.wanderT <= 0) { this.wanderT = 0.8 + Math.random(); this.dir += (Math.random() - 0.5) * 1.6; }
+        speed = 0.4;
+      }
+    } else if (this.cell) {
+      // 編成兵: スロットを守る。至近まで迫られた兵だけ局所的に後退し、後で戻る
+      if (scared && nd < 2) {
+        this.dir = Math.atan2(this.pos.x - nearest.pos.x, this.pos.z - nearest.pos.z);
+        speed = 0.9;
+      } else {
+        const s = this.cell.slots[this.slotIdx];
+        const dsx = s.x - this.pos.x, dsz = s.z - this.pos.z;
+        if (Math.hypot(dsx, dsz) > 0.35) { this.dir = Math.atan2(dsx, dsz); speed = 0.6; }
+        else speed = 0;
+      }
+    } else if (this.brave) {
+      // 編成なし守備隊: 持ち場を守り、至近だけ少し離れる
+      if (scared && nd < 2) {
+        this.dir = Math.atan2(this.pos.x - nearest.pos.x, this.pos.z - nearest.pos.z);
+        speed = 0.9;
+      } else {
+        this.wanderT -= dt;
+        if (this.wanderT <= 0) { this.wanderT = 1 + Math.random() * 1.5; this.dir += (Math.random() - 0.5) * 2.0; }
+        speed = 0.25;
+      }
+    } else if (scared) {
+      // 武装人間は少し距離を取りつつ撃つ、丸腰は全力で逃げる
+      const flee = Math.atan2(this.pos.x - nearest.pos.x, this.pos.z - nearest.pos.z);
+      this.dir = flee + Math.sin(time * 3 + this.pos.x) * 0.4;
+      speed = this.weapon ? (nd < 3 ? 1.6 : 0.5) : 1.7;
+    } else {
+      this.wanderT -= dt;
+      if (this.wanderT <= 0) { this.wanderT = 1.5 + Math.random() * 2.5; this.dir += (Math.random() - 0.5) * 2.4; }
+    }
+    this.pos.x += Math.sin(this.dir) * speed * dt;
+    this.pos.z += Math.cos(this.dir) * speed * dt;
+    this.pos.x = THREE.MathUtils.clamp(this.pos.x, -STAGE_HALF_W + 0.4, STAGE_HALF_W - 0.4);
+    clampStage(this.pos);
+    pushOutOfRocks(this.pos, 0.12);
+    const y = groundH(this.pos.x, this.pos.z);
+    const panic = scared ? Math.abs(Math.sin(time * 20)) * 0.03 : 0;
+    this.group.position.set(this.pos.x, y + panic, this.pos.z);
+    if (!(this.weapon && (scared || this.brave))) this.group.rotation.y = this.dir;
+  }
+  dispose() { scene.remove(this.group); }
+}
+
+// ================= bullets =================
+const bullets = [];
+const bulletGeo = new THREE.CapsuleGeometry(0.02, 0.1, 3, 6);
+const bulletMat = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0x442222, emissiveIntensity: 0.5 });
+function spawnBullet(from, targetSpider, wpn = WEAPONS.pistol, angOff = 0) {
+  const base = Math.atan2(targetSpider.pos.x - from.x, targetSpider.pos.z - from.z) + angOff;
+  const dir = new THREE.Vector3(Math.sin(base), 0, Math.cos(base));
+  const m = new THREE.Mesh(bulletGeo, bulletMat);
+  m.userData.vel = dir.clone().multiplyScalar(wpn.speed);
+  m.userData.life = wpn.life;
+  m.position.set(from.x, groundH(from.x, from.z) + 0.25, from.z);
+  m.quaternion.setFromUnitVectors(UP, dir);
+  scene.add(m);
+  bullets.push(m);
+}
+function updateBullets(dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.position.addScaledVector(b.userData.vel, dt);
+    b.userData.life -= dt;
+    let hit = false;
+    // 岩が弾を防ぐ(遮蔽物の後ろは安全地帯)
+    for (const rk of rocks) {
+      if (Math.hypot(b.position.x - rk.x, b.position.z - rk.z) < rk.r) { hit = true; break; }
+    }
+    if (!hit) for (let j = spiders.length - 1; j >= 0; j--) {   // 成体HP6、子どもHP2
+      const sp = spiders[j];
+      if (Math.hypot(b.position.x - sp.pos.x, b.position.z - sp.pos.z) < (sp.isAdult ? 0.5 : 0.45)) {
+        if (sp.invulnT <= 0) {
+          sp.hp -= 1;
+          if (sp.isAdult) {
+            sp.invulnT = 0.9;
+            sp.vel.addScaledVector(_v1.copy(b.userData.vel).normalize(), 3.5);  // ノックバック
+            pulse(sp.pos.x, sp.pos.z, 0xcc3333);
+            if (sp.hp <= 0) gameOver();
+          } else if (sp.hp <= 0) {
+            if (sp.prey) sp.prey.caught = false;   // 押さえ込み中に死んだら人間は逃げ出す
+            pulse(sp.pos.x, sp.pos.z, 0xcc5544);
+            sp.dispose(); spiders.splice(j, 1);
+          } else {
+            sp.invulnT = 0.3;                      // 1発目は耐える
+            pulse(sp.pos.x, sp.pos.z, 0xdd9977);
+          }
+        }
+        hit = true; break;
+      }
+    }
+    if (hit || b.userData.life <= 0 ||
+        Math.abs(b.position.x) > STAGE_HALF_W + 2 || Math.abs(b.position.z) > STAGE_HALF_D + 2) {
+      scene.remove(b); bullets.splice(i, 1);
+    }
+  }
+}
+
+// ================= fx: pulse rings =================
+const rings = [];
+const ringGeo = new THREE.RingGeometry(0.3, 0.38, 28);
+function pulse(x, z, color = 0x8fa065) {
+  const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.8, side: THREE.DoubleSide }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(x, groundH(x, z) + 0.05, z);
+  m.userData.t = 0;
+  scene.add(m); rings.push(m);
+}
+
+// ================= items: 虫の死骸(世界観: 同種の兵器の残骸。武装地帯に転がる) =================
+const items = [];        // {type:'corpse'|'bug', x, z, mesh, key}
+const itemTaken = {};    // 'c,r:type' → true(一度食べたら再訪しても出ない)
+const corpseMat = new THREE.MeshStandardMaterial({ color: 0x9a8768, roughness: 0.9 });
+function makeCorpseMesh() {
+  // ザトウムシ成体の死骸: 仰向けで脚がカサカサに丸まっている。食べるとHP上限+1
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), corpseMat);
+  body.scale.set(1, 0.6, 1.25);
+  body.position.y = 0.26;
+  body.castShadow = true;
+  g.add(body);
+  const femurGeo = new THREE.CylinderGeometry(0.018, 0.026, 1, 5);
+  const tibiaGeo = new THREE.CylinderGeometry(0.008, 0.016, 1, 5);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.3;
+    const S = new THREE.Vector3(Math.sin(a) * 0.14, 0.26, Math.cos(a) * 0.14);
+    const K = new THREE.Vector3(Math.sin(a) * 1.05, 0.7 + (i % 3) * 0.12, Math.cos(a) * 1.05);
+    const F = new THREE.Vector3(Math.sin(a) * 0.4, 0.95 + (i % 2) * 0.12, Math.cos(a) * 0.4);
+    const fe = new THREE.Mesh(femurGeo, corpseMat), ti = new THREE.Mesh(tibiaGeo, corpseMat);
+    placeSeg(fe, S, K); placeSeg(ti, K, F);
+    g.add(fe, ti);
+  }
+  return g;
+}
+// カメムシの死体(ユーザー参考画像準拠): 薄緑〜白緑の盾形、仰向けで脚が腹の上に折りたたまれてクロス。触角は横に長く
+const bugLegMat = new THREE.MeshStandardMaterial({ color: 0x7d8a6a, roughness: 0.6 });
+const bugBellyMat = new THREE.MeshStandardMaterial({ color: 0xc9d1bc, roughness: 0.5, transparent: true, opacity: 0.96 });
+const bugEdgeMat = new THREE.MeshStandardMaterial({ color: 0xaab59c, roughness: 0.65 });
+function makeBugMesh() {
+  const g = new THREE.Group();
+  // 盾形(五角形)の胴体: 腹側が上。淡い緑白でつやっとした感じ
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.58, 0.18, 5), bugBellyMat);
+  body.position.y = 0.13;
+  body.rotation.y = Math.PI / 5;
+  body.scale.z = 1.25;
+  body.castShadow = true;
+  g.add(body);
+  // 縁(背側の張り出し)が少し覗く
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.60, 0.05, 5), bugEdgeMat);
+  rim.position.y = 0.04;
+  rim.rotation.y = Math.PI / 5;
+  rim.scale.z = 1.28;
+  g.add(rim);
+  // 頭(先端の小さな突起)
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), bugEdgeMat);
+  head.scale.set(1, 0.55, 0.9);
+  head.position.set(0, 0.09, 0.62);
+  g.add(head);
+  const antGeo = new THREE.CylinderGeometry(0.011, 0.011, 1, 4);
+  const legGeo = new THREE.CylinderGeometry(0.013, 0.018, 1, 4);
+  for (const side of [1, -1]) {
+    // 触角: 頭から斜め前へ長く投げ出される(左右で開き方を変えて死骸らしく)
+    const spread = side > 0 ? 0.75 : 0.35;
+    const ant1 = new THREE.Mesh(antGeo, bugLegMat), ant2 = new THREE.Mesh(antGeo, bugLegMat);
+    placeSeg(ant1, new THREE.Vector3(side * 0.05, 0.10, 0.68), new THREE.Vector3(side * spread * 0.55, 0.07, 1.0));
+    placeSeg(ant2, new THREE.Vector3(side * spread * 0.55, 0.07, 1.0), new THREE.Vector3(side * spread, 0.04, 1.25));
+    g.add(ant1, ant2);
+    // 脚6本: 体の縁から膝が少し立ち上がり、先端は腹の上で反対側へ折れてクロスする
+    for (let i = 0; i < 3; i++) {
+      const zz = 0.38 - i * 0.36;
+      const fe = new THREE.Mesh(legGeo, bugLegMat), ti = new THREE.Mesh(legGeo, bugLegMat);
+      const S = new THREE.Vector3(side * 0.44, 0.14, zz);
+      const K = new THREE.Vector3(side * 0.50, 0.34 + (i % 2) * 0.05, zz - 0.10);
+      const F = new THREE.Vector3(-side * 0.22, 0.26, zz - 0.34 + (i % 2) * 0.10);
+      placeSeg(fe, S, K); placeSeg(ti, K, F);
+      g.add(fe, ti);
+    }
+  }
+  return g;
+}
+function buildItems() {
+  for (const it of items) scene.remove(it.mesh);
+  items.length = 0;
+  const d = stageDist(stageCol, stageRow);
+  const isHQ = stageCol === HQ_COL && stageRow === HQ_ROW;
+  const rng = mulberry32(stageCol * 271 + stageRow * 331 + 13);
+  const defs = [];
+  if (isHQ || (d >= 2 && rng() < 0.55)) defs.push('corpse');
+  if (isHQ || (d >= 3 && rng() < 0.45)) defs.push('bug');
+  for (const type of defs) {
+    const key = skey(stageCol, stageRow) + ':' + type;
+    let x, z, t = 0;
+    do {
+      x = (rng() * 2 - 1) * (STAGE_HALF_W - 4);
+      z = (rng() * 2 - 1) * (STAGE_HALF_D - 3);
+      t++;
+    } while (t < 20 && (Math.hypot(x, z) < 4 || rockAt(x, z, 1)));
+    if (itemTaken[key]) continue;   // rngの消費順を保つため位置決定後に判定
+    const mesh = type === 'corpse' ? makeCorpseMesh() : makeBugMesh();
+    mesh.position.set(x, groundH(x, z), z);
+    scene.add(mesh);
+    items.push({ type, x, z, mesh, key });
+  }
+}
+
+// ================= stage flow =================
+const stageRemain = {};   // skey → 残り人数。狩り尽くしたステージには再POPしない
+
+// 難度 = 開始からの距離 d(0〜6)。人数・武装率・武器種が段階的に上がる
+function pickWeapon(d) {
+  const roll = Math.random();
+  if (d <= 2) return WEAPONS.pistol;
+  if (d === 3) return roll < 0.7 ? WEAPONS.pistol : WEAPONS.rifle;
+  if (d === 4) return roll < 0.45 ? WEAPONS.pistol : roll < 0.85 ? WEAPONS.rifle : WEAPONS.shotgun;
+  if (d === 5) return roll < 0.25 ? WEAPONS.pistol : roll < 0.75 ? WEAPONS.rifle : WEAPONS.shotgun;
+  return roll < 0.10 ? WEAPONS.pistol : roll < 0.60 ? WEAPONS.rifle : WEAPONS.shotgun;   // HQ
+}
+const stageFlags = {};   // skey → {captainDead}
+// 5人セル(前3後2)/3人セル(前2後1)の配置スロットを作る
+function makeCell(ax, az, facing, n) {
+  const fx = Math.sin(facing), fz = Math.cos(facing);
+  const rx = Math.cos(facing), rz = -Math.sin(facing);
+  const offs = n >= 5
+    ? [[-1.5, 0.8], [0, 0.8], [1.5, 0.8], [-0.75, -0.6], [0.75, -0.6]]   // 前3+後2(後列は前列の隙間)
+    : [[-0.8, 0.5], [0.8, 0.5], [0, -0.8]];                              // 前2+後1
+  const cell = { ax, az, facing, slots: [] };
+  for (const [r, f] of offs)
+    cell.slots.push({ x: ax + rx * r + fx * f, z: az + rz * r + fz * f, side: Math.sign(r) });
+  return cell;
+}
+function assignCell(h, cell, idx) {
+  h.cell = cell; h.slotIdx = idx; h.slotSide = cell.slots[idx].side;
+  h.pos.set(cell.slots[idx].x + (Math.random() - 0.5) * 0.5, 0, cell.slots[idx].z + (Math.random() - 0.5) * 0.5);
+}
+function spawnHumans(entryX = 0, entryZ = 0) {
+  const d = stageDist(stageCol, stageRow);
+  const k = skey(stageCol, stageRow);
+  const isHQ = stageCol === HQ_COL && stageRow === HQ_ROW;
+  if (stageRemain[k] === undefined) stageRemain[k] = isHQ ? 22 : 5 + d * 2;
+  let n = stageRemain[k];
+  if (n <= 0) return;
+  const armedRatio = isHQ ? 1 : [0, 0.10, 0.30, 0.5, 0.65, 0.8][Math.min(d, 5)];
+  const randPos = () => {
+    let x, z, tries = 0;
+    do {
+      x = (Math.random() * 2 - 1) * (STAGE_HALF_W - 2);
+      z = (Math.random() * 2 - 1) * (STAGE_HALF_D - 2);
+      tries++;
+    } while (tries < 24 && (Math.hypot(x - entryX, z - entryZ) < 7 || rockAt(x, z)));
+    return [x, z];
+  };
+  if (isHQ) {
+    // 本拠地: 隊長1 + 守備隊15(5人セル×3、開口部を左右から狙う)+ 武装兵6
+    if (!(stageFlags[k] || {}).captainDead && n > 0) {
+      humans.push(new Human(0, 0, CAPTAIN_WPN, true)); n--;
+    }
+    const cells = [];
+    for (let gi = 0; gi < hqGapAngles.length; gi++) {
+      const a = hqGapAngles[gi];
+      const gapX = Math.sin(a) * 6.4, gapZ = Math.cos(a) * 6.4 * 0.75;
+      const side = gi === 0 ? 1 : -1;   // 開口部の真正面を塞がず左右から射線を交差
+      const ax = Math.sin(a) * 4.0 + Math.cos(a) * 1.6 * side;
+      const az = Math.cos(a) * 4.0 * 0.75 - Math.sin(a) * 1.6 * side;
+      cells.push(makeCell(ax, az, Math.atan2(gapX - ax, gapZ - az), 5));
+    }
+    cells.push(makeCell(0, -2.2, hqGapAngles[0] || 0, 5));   // 予備セル(中央)
+    let braveN = Math.min(15, n);
+    for (let i = 0; i < braveN; i++) {
+      const h = new Human(0, 0, pickWeapon(6), true);
+      assignCell(h, cells[Math.floor(i / 5)], i % 5);
+      humans.push(h);
+    }
+    n -= braveN;
+    for (let i = 0; i < n; i++) {   // 残りは通常武装兵(散開)
+      const [x, z] = randPos();
+      humans.push(new Human(x, z, pickWeapon(6), false));
+    }
+  } else {
+    // d5(本拠地の隣)は3人セルの守備隊が前哨として登場(陣形の予告編)
+    let cellN = (d === 5 && n === 5 + d * 2) ? 3 : 0;
+    if (cellN) {
+      const rng = mulberry32(stageCol * 53 + stageRow * 71 + 3);
+      const ax = (rng() * 2 - 1) * 6, az = (rng() * 2 - 1) * 4;
+      const cell = makeCell(ax, az, Math.atan2(-ax, -az) + (rng() - 0.5), 3);
+      for (let i = 0; i < 3; i++) {
+        const h = new Human(0, 0, pickWeapon(d), true);
+        assignCell(h, cell, i);
+        humans.push(h);
+      }
+      n -= 3;
+    }
+    for (let i = 0; i < n; i++) {
+      const [x, z] = randPos();
+      const weapon = Math.random() < armedRatio ? pickWeapon(d) : null;
+      humans.push(new Human(x, z, weapon, false));
+    }
+  }
+}
+
+const flashEl = document.getElementById('flash');
+const labelEl = document.getElementById('stagelabel');
+const edgeEls = {
+  L: document.getElementById('edgeL'), R: document.getElementById('edgeR'),
+  T: document.getElementById('edgeT'), B: document.getElementById('edgeB'),
+};
+let isGameOver = false, isGameClear = false;
+let gatePulseT = 0;   // 隊長を押さえられない時のフィードバック間隔
+function gameOver() {
+  isGameOver = true;
+  labelEl.textContent = 'GAME OVER — クリックで最初から';
+  labelEl.style.opacity = '1';
+}
+function gameClear() {
+  isGameClear = true;
+  labelEl.textContent = 'GAME CLEAR!! — クリックで最初から';
+  labelEl.style.opacity = '1';
+}
+// 武装人間を捕食するとユニークな子どもが生まれる(敵が資源になる)
+function spawnChildFrom(h) {
+  if (h.captain) return new Harvestman(h.pos.x, h.pos.z, 0.55, 0xb05a4a, { hp: 5, speed: 3.2, kind: 'elite' });
+  const w = h.weapon && h.weapon.name;
+  if (w === 'rifle')   return new Harvestman(h.pos.x, h.pos.z, 0.38, 0xc4735a, { speed: 3.5, kind: 'fast' });   // 速い赤
+  if (w === 'shotgun') return new Harvestman(h.pos.x, h.pos.z, 0.50, 0x74855c, { hp: 4, speed: 2.3, kind: 'tough' });   // 硬い大柄
+  return new Harvestman(h.pos.x, h.pos.z, 0.36, 0xa9ba7d);
+}
+
+// ---- minimap ----
+const mmEl = document.getElementById('minimap');
+const mmCells = [];
+for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
+  const cell = document.createElement('div');
+  cell.className = 'mm';
+  mmEl.appendChild(cell);
+  mmCells.push({ c, r, el: cell });
+}
+function updateMinimap() {
+  for (const m of mmCells) {
+    m.el.classList.toggle('hq', m.c === HQ_COL && m.r === HQ_ROW);
+    m.el.classList.toggle('cleared', stageRemain[skey(m.c, m.r)] === 0);
+    m.el.classList.toggle('cur', m.c === stageCol && m.r === stageRow);
+  }
+}
+
+function goToStage(dx, dz) {
+  const nc = stageCol + dx, nr = stageRow + dz;
+  if (nc < 0 || nc >= GRID || nr < 0 || nr >= GRID) return;   // 外周は塞がっている
+  stageCol = nc; stageRow = nr;
+  terrainOff = (stageCol * 4 + stageRow) * 37.3;
+  rebuildGround();
+  buildRocks();
+  buildItems();
+  updateBlockedSides();
+  // 来た方向の反対側の端から入場、子どもは隊列を保って一緒に移動
+  const newX = dx !== 0 ? -dx * (STAGE_HALF_W - 2) : adult.pos.x;
+  const newZ = dz !== 0 ? -dz * (STAGE_HALF_D - 1.6) : adult.pos.z;
+  const ddx = newX - adult.pos.x, ddz = newZ - adult.pos.z;
+  for (const sp of spiders) {
+    sp.translate(ddx, ddz);
+    sp.pos.x = THREE.MathUtils.clamp(sp.pos.x, -STAGE_HALF_W + 1, STAGE_HALF_W - 1);
+    clampStage(sp.pos);
+  }
+  clickTarget = null;
+  stageIntent = null;
+  for (const sp of spiders) { sp.prey = null; sp.pounceT = 0; }   // 押さえ込みは中断
+  for (const h of humans) h.dispose(); humans.length = 0;
+  for (const b of bullets) scene.remove(b); bullets.length = 0;
+  spawnHumans(adult.pos.x, adult.pos.z);
+  flashEl.style.opacity = '0.85';
+  setTimeout(() => flashEl.style.opacity = '0', 60);
+  updateMinimap();
+}
+
+// ================= setup =================
+const adult = new Harvestman(0, 0, 1);
+spiders.push(adult);
+buildRocks();
+buildItems();
+updateBlockedSides();
+spawnHumans();
+updateMinimap();
+
+let clickTarget = null;
+let stageIntent = null;   // {dx,dz}: 枠の「完全に外側」をクリックした時だけ立つ移動意図
+function setClickTarget(x, z) {
+  clickTarget = new THREE.Vector3(x, groundH(x, z), z);
+  stageIntent = null;
+  // 枠内の人間や地面のクリックでは絶対に遷移しない。隣が存在する方向のみ有効
+  const ox = x > STAGE_HALF_W ? 1 : x < -STAGE_HALF_W ? -1 : 0;
+  const oz = z > STAGE_HALF_D ? 1 : z < -STAGE_HALF_D ? -1 : 0;
+  if (ox !== 0 && (oz === 0 || Math.abs(x) - STAGE_HALF_W >= Math.abs(z) - STAGE_HALF_D)) {
+    if (stageCol + ox >= 0 && stageCol + ox < GRID) stageIntent = { dx: ox, dz: 0 };
+  } else if (oz !== 0) {
+    if (stageRow + oz >= 0 && stageRow + oz < GRID) stageIntent = { dx: 0, dz: oz };
+  }
+  // 移動意図がある時は目標を見切れ位置より奥へ補正(手前で止まって遷移しないのを防ぐ)
+  if (stageIntent) {
+    if (stageIntent.dx > 0) clickTarget.x = Math.max(clickTarget.x, STAGE_HALF_W + 1.8);
+    else if (stageIntent.dx < 0) clickTarget.x = Math.min(clickTarget.x, -STAGE_HALF_W - 1.8);
+    else if (stageIntent.dz > 0) clickTarget.z = Math.max(clickTarget.z, STAGE_HALF_D + 1.8);
+    else if (stageIntent.dz < 0) clickTarget.z = Math.min(clickTarget.z, -STAGE_HALF_D - 1.8);
+  }
+  pulse(x, z, 0xc9a0a0);
+}
+const raycaster = new THREE.Raycaster();
+addEventListener('pointerdown', (ev) => {
+  if (isGameOver || isGameClear) { location.reload(); return; }
+  raycaster.setFromCamera(new THREE.Vector2(
+    (ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1), camera);
+  const hit = raycaster.intersectObject(ground)[0];
+  if (hit) setClickTarget(hit.point.x, hit.point.z);
+});
+addEventListener('wheel', (ev) => {
+  zoomScale = THREE.MathUtils.clamp(zoomScale + ev.deltaY * 0.0008, 0.7, 1.8);
+  frameCamera();
+});
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  frameCamera();
+});
+
+const statsEl = document.getElementById('stats');
+
+// ================= main loop =================
+const clock = new THREE.Clock();
+let simTime = 0;
+function tick() {
+  if (document.hidden) setTimeout(tick, 50);
+  else requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  step(dt);
+}
+function step(dt) {
+  if (isGameOver || isGameClear) { renderer.render(scene, camera); return; }
+  simTime += dt;
+  const time = simTime;
+
+  // --- 被弾後の無敵時間: 点滅表現(減算はHarvestman.update側) ---
+  {
+    const f = adult.invulnT > 0 ? 0.35 + 0.65 * Math.abs(Math.sin(simTime * 26)) : 1;
+    adult.legMat.opacity = 0.7 * f;
+    adult.senseMat.opacity = 0.55 * f;
+    adult.bodyMat.opacity = 0.94 * f;
+  }
+
+  // --- adult target: クリック指示 > 至近距離(3.2)だけ自動追尾 > 待機 ---
+  if (clickTarget) {
+    adult.target.copy(clickTarget);
+    if (adult.pos.distanceTo(clickTarget) < 0.4) clickTarget = null;
+  } else {
+    let nearest = null, nd = 1e9;
+    for (const h of humans) {
+      if (h.caught) continue;
+      const d = h.pos.distanceTo(adult.pos); if (d < nd) { nd = d; nearest = h; }
+    }
+    if (nearest && nd < 3.2) adult.target.copy(nearest.pos);   // 触角の届く範囲だけ反応
+    else adult.target.copy(adult.pos);                          // それ以外は待機(触角だけ動く)
+  }
+  // --- children target: nearby human or hover near parent ---
+  for (const sp of spiders) {
+    if (sp === adult) continue;
+    sp.retargetT -= dt;
+    let nearest = null, nd = 1e9;
+    for (const h of humans) { if (h.caught) continue; const d = h.pos.distanceTo(sp.pos); if (d < nd) { nd = d; nearest = h; } }
+    if (nearest && nd < 8) sp.target.copy(nearest.pos);
+    else if (sp.retargetT <= 0) {
+      sp.retargetT = 2 + Math.random() * 2;
+      const a = Math.random() * Math.PI * 2, r = 1.2 + Math.random() * 2.6;
+      sp.target.set(adult.pos.x + Math.sin(a) * r, 0, adult.pos.z + Math.cos(a) * r);
+    }
+  }
+  // --- 捕食プレス進行: 押さえ込み中は減速し、胴体が接地した瞬間に取り込み ---
+  for (const sp of spiders) {
+    if (!sp.prey) continue;
+    sp.pounceT += dt / sp.pounceDur;
+    sp.target.copy(sp.pos);
+    // 成体は押さえた勢いで即取り込み、子どもは捕食し終わる頃に新しい子どもが生まれる
+    if (!sp.prey.eaten && sp.pounceT >= (sp.isAdult ? 0.5 : 0.85)) {
+      const h = sp.prey; h.eaten = true;
+      pulse(h.pos.x, h.pos.z);
+      spiders.push(spawnChildFrom(h));
+      const idx = humans.indexOf(h);
+      if (idx >= 0) humans.splice(idx, 1);
+      h.dispose();
+      const kk = skey(stageCol, stageRow);
+      stageRemain[kk] = Math.max((stageRemain[kk] || 1) - 1, 0);
+      if (h.captain) (stageFlags[kk] = stageFlags[kk] || {}).captainDead = true;
+      if (humans.length === 0) {
+        if (stageCol === HQ_COL && stageRow === HQ_ROW) {
+          gameClear();   // 敵本拠地を制圧 = ゲームクリア
+        } else {
+          adult.hp = Math.min(adult.maxHp, adult.hp + 2);   // 制圧報酬: HP回復(上限は死骸で伸ばす)
+          labelEl.textContent = 'エリア制圧 — HP回復';
+          labelEl.style.opacity = '1';
+          setTimeout(() => { if (!isGameOver && !isGameClear) labelEl.style.opacity = '0'; }, 1100);
+        }
+        updateMinimap();
+      }
+    }
+    if (sp.pounceT >= 1) sp.prey = null;
+  }
+
+  for (const sp of spiders) sp.update(dt, time);
+
+  // --- separation: 個体同士が団子にならないよう反発(成体は押されない) ---
+  for (let i = 0; i < spiders.length; i++) {
+    const a = spiders[i];
+    for (let j = i + 1; j < spiders.length; j++) {
+      const b = spiders[j];
+      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+      const minD = 0.62 * (a.s + b.s) + 0.12;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > minD * minD || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
+      if (a.isAdult) { b.pos.x += dx * push * 2; b.pos.z += dz * push * 2; }
+      else if (b.isAdult) { a.pos.x -= dx * push * 2; a.pos.z -= dz * push * 2; }
+      else {
+        a.pos.x -= dx * push; a.pos.z -= dz * push;
+        b.pos.x += dx * push; b.pos.z += dz * push;
+      }
+    }
+    // 注意: ここでclampStageしない(見切れ遷移でzが枠外に出るのを潰してしまう。各自のupdateでクランプ済み)
+  }
+
+  for (const h of humans) h.update(dt, time);
+  // --- 人間同士の最低間隔(重なり防止、陣形が団子にならない) ---
+  for (let i = 0; i < humans.length; i++) {
+    const a = humans[i]; if (a.caught) continue;
+    for (let j = i + 1; j < humans.length; j++) {
+      const b = humans[j]; if (b.caught) continue;
+      const min = (a.captain || b.captain) ? 1.7 : 1.25;
+      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > min * min || d2 < 1e-6) continue;
+      const dd = Math.sqrt(d2), push = (min - dd) / dd * 0.4;
+      a.pos.x -= dx * push; a.pos.z -= dz * push;
+      b.pos.x += dx * push; b.pos.z += dz * push;
+    }
+  }
+  updateBullets(dt);
+
+  // --- capture: 触れたら押さえ込み(pounce)開始。取り込みは上の進行ループで ---
+  for (const h of humans) {
+    if (h.caught) continue;
+    // 隊長は子ども4匹以上の群れがいないと押さえ込めない
+    if (h.captain && spiders.length - 1 < 4) {
+      if (adult.pos.distanceTo(h.pos) < 1.2 && time > gatePulseT) {
+        gatePulseT = time + 0.8;
+        pulse(h.pos.x, h.pos.z, 0x999999);   // 灰色パルス=まだ無理
+      }
+      continue;
+    }
+    for (const sp of spiders) {
+      if (sp.prey) continue;   // 1匹ずつしか押さえられない
+      const capR = 0.45 * sp.s + 0.28;
+      if (h.pos.distanceTo(sp.pos) < capR) { h.caught = true; sp.prey = h; sp.pounceT = 0; break; }
+    }
+  }
+  // --- items: 死骸を食べる ---
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    let eaten = false;
+    if (it.type === 'corpse') {
+      // 仲間の死骸は成体だけが食べられる: HP上限+1(上限8)
+      if (Math.hypot(adult.pos.x - it.x, adult.pos.z - it.z) < 1.0 && adult.maxHp < 8) {
+        adult.maxHp += 1;
+        adult.hp = Math.min(adult.hp + 1, adult.maxHp);
+        pulse(it.x, it.z, 0x8fa065);
+        eaten = true;
+      }
+    } else {
+      // カメムシの死体: 誰かが触れると子どもが3匹湧く
+      for (const sp of spiders) {
+        if (Math.hypot(sp.pos.x - it.x, sp.pos.z - it.z) < 0.9) {
+          for (let n2 = 0; n2 < 3; n2++)
+            spiders.push(new Harvestman(it.x + (Math.random() - 0.5), it.z + (Math.random() - 0.5), 0.36, 0xa9ba7d));
+          pulse(it.x, it.z, 0xa9ba7d);
+          eaten = true;
+          break;
+        }
+      }
+    }
+    if (eaten) { itemTaken[it.key] = true; scene.remove(it.mesh); items.splice(i, 1); }
+  }
+  // 人間の再POPはしない: 狩り尽くしたステージは空になる(stageRemainで管理)
+
+  // --- stage transition: クリック意図がある時だけ端で遷移(追跡中の誤遷移防止) ---
+  if (stageIntent) {
+    // 成体が枠から見切れてから遷移(体が紙の外へ歩き出してから画面が切り替わる)
+    if (stageIntent.dx > 0 && adult.pos.x > STAGE_HALF_W + 1.4) goToStage(1, 0);
+    else if (stageIntent.dx < 0 && adult.pos.x < -STAGE_HALF_W - 1.4) goToStage(-1, 0);
+    else if (stageIntent.dz > 0 && adult.pos.z > STAGE_HALF_D + 1.4) goToStage(0, 1);
+    else if (stageIntent.dz < 0 && adult.pos.z < -STAGE_HALF_D - 1.4) goToStage(0, -1);
+    // クリック消化後に端から離れたら残留意図を破棄(誤遷移しない)
+    else if (!clickTarget &&
+             Math.abs(adult.pos.x) < STAGE_HALF_W - 4 &&
+             Math.abs(adult.pos.z) < STAGE_HALF_D - 3) stageIntent = null;
+  }
+
+  // --- edge arrows: 行ける方向だけ矢印を表示、意図がある/端に近いと強調 ---
+  edgeEls.L.classList.toggle('off', stageCol === 0);
+  edgeEls.R.classList.toggle('off', stageCol === GRID - 1);
+  edgeEls.T.classList.toggle('off', stageRow === 0);
+  edgeEls.B.classList.toggle('off', stageRow === GRID - 1);
+  edgeEls.L.classList.toggle('hot', !!(stageIntent && stageIntent.dx < 0) || adult.pos.x < -STAGE_HALF_W + 4);
+  edgeEls.R.classList.toggle('hot', !!(stageIntent && stageIntent.dx > 0) || adult.pos.x > STAGE_HALF_W - 4);
+  edgeEls.T.classList.toggle('hot', !!(stageIntent && stageIntent.dz < 0) || adult.pos.z < -STAGE_HALF_D + 3);
+  edgeEls.B.classList.toggle('hot', !!(stageIntent && stageIntent.dz > 0) || adult.pos.z > STAGE_HALF_D - 3);
+
+  // --- fx ---
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const m = rings[i];
+    m.userData.t += dt * 2.2;
+    m.scale.setScalar(1 + m.userData.t * 2.5);
+    m.material.opacity = 0.8 * (1 - m.userData.t);
+    if (m.userData.t >= 1) { scene.remove(m); m.material.dispose(); rings.splice(i, 1); }
+  }
+
+  statsEl.textContent =
+    `HP ${'♥'.repeat(Math.max(adult.hp, 0))}${'♡'.repeat(Math.max(adult.maxHp - adult.hp, 0))}` +
+    `  子ども: ${spiders.length - 1}  人間: ${humans.length}${humans.length === 0 ? '(制圧済み)' : ''}`;
+  renderer.render(scene, camera);
+}
+tick();
+
+// ================= headless debug hooks =================
+window.__step = (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) step(dt); return simTime.toFixed(2); };
+window.__shot = () => {
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/jpeg', 0.85);
+  return fetch('/shot', { method: 'POST', body: url }).then(r => 'posted ' + url.length);
+};
+window.__click = (x, z) => { setClickTarget(x, z); return 'ok'; };
+window.__stage = (d) => {   // 'R'/'L'/'U'/'D' または +1/-1(左右)
+  if (d === 'R' || d === 1) goToStage(1, 0);
+  else if (d === 'L' || d === -1) goToStage(-1, 0);
+  else if (d === 'U') goToStage(0, -1);
+  else if (d === 'D') goToStage(0, 1);
+  return skey(stageCol, stageRow);
+};
+window.__zoom = (v) => { zoomScale = v; frameCamera(); return zoomScale; };
+window.__damage = (n = 1) => { adult.hp -= n; if (adult.hp <= 0) gameOver(); return adult.hp; };
+window.__item = (type = 'bug') => {   // アート確認用: アイテムメッシュを原点に置く
+  const m = type === 'bug' ? makeBugMesh() : makeCorpseMesh();
+  m.position.set(0, groundH(0, 0), 0);
+  scene.add(m);
+  return 'ok';
+};
+window.__kids = (n = 4) => {   // バランステスト用: 子どもをn匹スポーン
+  for (let i = 0; i < n; i++)
+    spiders.push(new Harvestman(adult.pos.x + (Math.random() - 0.5) * 3, adult.pos.z + (Math.random() - 0.5) * 3, 0.36, 0xa9ba7d));
+  return spiders.length - 1;
+};
+window.__state = () => ({
+  col: stageCol, row: stageRow, hp: adult.hp, maxHp: adult.maxHp, gameOver: isGameOver, gameClear: isGameClear,
+  adult: { x: +adult.pos.x.toFixed(2), z: +adult.pos.z.toFixed(2) },
+  children: spiders.slice(1).map(s => ({ x: +s.pos.x.toFixed(2), z: +s.pos.z.toFixed(2), hp: s.hp, kind: s.kind })),
+  humans: humans.map(h => ({ x: +h.pos.x.toFixed(2), z: +h.pos.z.toFixed(2),
+    weapon: h.weapon ? h.weapon.name : null, brave: h.brave, cell: !!h.cell, caught: h.caught })),
+  items: items.map(it => ({ type: it.type, x: +it.x.toFixed(1), z: +it.z.toFixed(1) })),
+  bullets: bullets.length,
+  rocks: rocks.length,
+  remain: stageRemain[skey(stageCol, stageRow)],
+  pounce: spiders.filter(s => s.prey).length,
+  bodyY: +adult.bodyY.toFixed(3),
+});
+</script>
+</body>
+</html>
