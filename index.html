@@ -1357,7 +1357,7 @@ function buildTitle() {
   const c = cv.getContext('2d');
   c.fillStyle = '#6f7f4a';                            // マットな緑の●
   c.beginPath(); c.arc(480, 240, 192, 0, Math.PI * 2); c.fill();
-  c.fillStyle = '#77864f';
+  c.fillStyle = '#55663a';
   c.font = '400 126px Consolas, monospace';
   c.textAlign = 'center'; c.textBaseline = 'middle';
   c.fillText('start', 480, 784);
@@ -1481,8 +1481,8 @@ function step(dt) {
             c2.fill();
           }
           // 剥がれた場所から虫が逃げ出す(欠け=逃げた虫)。終盤のチャンクは必ず虫になる
-          const isFinal = T.idx > T.chunks.length - 50;
-          if (isFinal || (T.kids.length < 170 && Math.random() < 0.85)) {
+          const isFinal = T.idx > T.chunks.length - 40;
+          if (isFinal || (T.kids.length < 70 && Math.random() < 0.45)) {
             const wx = -6 + ch.px / 80, wz = -6.4 + ch.py / 80;
             const k = new Harvestman(wx, wz, 0.16 + Math.random() * 0.1, 0xa9ba7d,
               { noShadow: true, speed: 3.5 + Math.random() * 2 });
