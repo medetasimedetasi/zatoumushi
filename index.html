@@ -1344,52 +1344,61 @@ updateBlockedSides();
 spawnHumans();
 updateMinimap();
 
-// ================= opening title: ●とstartは子どもたちで構成されている =================
-const titleState = { active: true, kids: [], meshes: [], scatterT: 0 };
+// ================= opening title =================
+// 完全にソリッドな●とstartが、実は過密な子どもたちの塊。startを押すと
+// 「きわ」から虫がほどけて逃げ出し、逃げた分だけ図形がボロボロ欠けていく(フェードなし)
+const titleState = { active: true, eroding: false, plane: null, tex: null, ctx: null,
+  chunks: [], idx: 0, acc: 0, kids: [] };
 function buildTitle() {
+  const T = titleState;
   document.body.classList.add('title');   // UI・ミニマップ・矢印は隠す
-  // タイトルの●(画面中央やや上)
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(2.4, 40),
-    new THREE.MeshBasicMaterial({ color: 0x6f7f4a, transparent: true, opacity: 0.92, depthWrite: false }));
-  disc.rotation.x = -Math.PI / 2;
-  disc.position.set(0, 0.95, -3.4);
-  scene.add(disc); titleState.meshes.push(disc);
-  // start の文字
-  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
+  // 1枚のキャンバスに●とstartを描く(ワールド x:-6..6, z:-6.4..5.2 / 80px per unit)
+  const cv = document.createElement('canvas'); cv.width = 960; cv.height = 928;
   const c = cv.getContext('2d');
-  c.font = '400 68px Consolas, monospace';
+  c.fillStyle = '#6f7f4a';                            // マットな緑の●
+  c.beginPath(); c.arc(480, 240, 192, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#77864f';
+  c.font = '400 126px Consolas, monospace';
   c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillStyle = '#7a8a55';
-  c.fillText('start', 256, 64);
-  const tp = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.25),
-    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, opacity: 0.95, depthWrite: false }));
-  tp.rotation.x = -Math.PI / 2;
-  tp.position.set(0, 0.95, 3.4);
-  scene.add(tp); titleState.meshes.push(tp);
-  // ●の縁と文字の上に、タイトルを「構成」する子どもたちが立っている
-  const pts = [];
-  for (let i = 0; i < 20; i++) { const a = i / 20 * Math.PI * 2; pts.push([Math.sin(a) * 2.4, -3.4 + Math.cos(a) * 2.4]); }
-  for (let i = 0; i < 8; i++) { const a = Math.random() * Math.PI * 2, r = Math.random() * 1.7; pts.push([Math.sin(a) * r, -3.4 + Math.cos(a) * r]); }
-  const img = c.getImageData(0, 0, 512, 128).data;
-  for (let y = 6; y < 128; y += 11) for (let x = 6; x < 512; x += 11) {
-    if (img[(y * 512 + x) * 4 + 3] > 110) pts.push([(x - 256) / 512 * 9, 3.4 + (y - 64) / 128 * 2.25]);
+  c.fillText('start', 480, 784);
+  T.ctx = c;
+  T.tex = new THREE.CanvasTexture(cv);
+  T.plane = new THREE.Mesh(new THREE.PlaneGeometry(12, 11.6),
+    new THREE.MeshBasicMaterial({ map: T.tex, transparent: true, depthWrite: false }));
+  T.plane.rotation.x = -Math.PI / 2;
+  T.plane.position.set(0, 0.95, -0.6);
+  scene.add(T.plane);
+  // チャンク分割し、外側(きわ)からの距離をBFSで求めて崩壊順にする
+  const img = c.getImageData(0, 0, 960, 928).data;
+  const CS = 26, gw = Math.ceil(960 / CS), gh = Math.ceil(928 / CS);
+  const grid = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    const px = Math.min(gx * CS + CS / 2, 959) | 0, py = Math.min(gy * CS + CS / 2, 927) | 0;
+    grid[gy * gw + gx] = img[(py * 960 + px) * 4 + 3] > 60 ? 1 : 0;
   }
-  for (const [px, pz] of pts) {
-    const k = new Harvestman(px + (Math.random() - 0.5) * 0.2, pz + (Math.random() - 0.5) * 0.2, 0.22, 0xa9ba7d);
-    k.target.set(k.pos.x, 0, k.pos.z);
-    titleState.kids.push(k);
+  const layer = new Int16Array(gw * gh).fill(-1);
+  const q = [];
+  for (let i = 0; i < gw * gh; i++) if (!grid[i]) { layer[i] = 0; q.push(i); }
+  for (let head = 0; head < q.length; head++) {
+    const i = q[head], gx = i % gw, gy = (i / gw) | 0;
+    for (const [dx2, dy2] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = gx + dx2, ny = gy + dy2;
+      if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+      const j = ny * gw + nx;
+      if (layer[j] === -1) { layer[j] = layer[i] + 1; q.push(j); }
+    }
   }
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    const i = gy * gw + gx;
+    if (grid[i]) T.chunks.push({ px: gx * CS + CS / 2, py: gy * CS + CS / 2, order: layer[i] + Math.random() * 1.7 });
+  }
+  T.chunks.sort((a, b) => a.order - b.order);
 }
 function startGame() {
   if (!titleState.active) return;
   titleState.active = false;
+  titleState.eroding = true;                 // きわから崩壊開始
   document.body.classList.remove('title');   // UIがフェードイン
-  for (const k of titleState.kids) {   // わらわら散らばって画面外へ
-    const a = Math.atan2(k.pos.x, k.pos.z + 0.001) + (Math.random() - 0.5) * 1.3;
-    k.target.set(Math.sin(a) * (STAGE_HALF_W + 8), 0, Math.cos(a) * (STAGE_HALF_D + 8));
-    k.speed = 3.2 + Math.random();
-    k.noClamp = true;
-  }
 }
 buildTitle();
 
@@ -1419,10 +1428,13 @@ const raycaster = new THREE.Raycaster();
 addEventListener('pointerdown', (ev) => {
   if (isGameOver || isGameClear) { location.reload(); return; }
   if (ending) return;                                    // エンディング中は操作不可
-  if (titleState.active) { startGame(); return; }        // タイトル: クリックで開始
   raycaster.setFromCamera(new THREE.Vector2(
     (ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1), camera);
   const hit = raycaster.intersectObject(ground)[0];
+  if (titleState.active) {   // タイトル: start文字の付近をクリックした時だけ開始
+    if (hit && Math.abs(hit.point.x) < 3.6 && hit.point.z > 2.2 && hit.point.z < 4.6) startGame();
+    return;
+  }
   if (hit) setClickTarget(hit.point.x, hit.point.z);
 });
 addEventListener('wheel', (ev) => {
@@ -1451,19 +1463,43 @@ function step(dt) {
   simTime += dt;
   const time = simTime;
 
-  // --- opening title: 散開した子どもたちの後始末 ---
-  if (titleState.kids.length) {
-    for (const k of titleState.kids) k.update(dt, time);
-    if (!titleState.active) {
-      titleState.scatterT += dt;
-      for (const m of titleState.meshes) if (m.material.opacity > 0)
-        m.material.opacity = Math.max(0, m.material.opacity - dt * 1.1);
-      for (let i = titleState.kids.length - 1; i >= 0; i--) {
-        const k = titleState.kids[i];
-        if (Math.abs(k.pos.x) > STAGE_HALF_W + 4 || Math.abs(k.pos.z) > STAGE_HALF_D + 4 || titleState.scatterT > 6) {
-          k.dispose(); titleState.kids.splice(i, 1);
-          if (!titleState.kids.length) for (const m of titleState.meshes) scene.remove(m);
+  // --- opening title: きわから虫がほどけて図形が欠けていく ---
+  {
+    const T = titleState;
+    if (T.eroding && T.idx < T.chunks.length) {
+      T.acc += dt * (T.chunks.length / 3.2);   // 全体で約3.2秒かけて崩壊
+      const c2 = T.ctx;
+      c2.globalCompositeOperation = 'destination-out';
+      while (T.acc >= 1 && T.idx < T.chunks.length) {
+        T.acc -= 1;
+        const ch = T.chunks[T.idx++];
+        for (let b = 0; b < 3; b++) {   // ぎざぎざに削り取る
+          c2.beginPath();
+          c2.arc(ch.px + (Math.random() - 0.5) * 18, ch.py + (Math.random() - 0.5) * 18,
+                 11 + Math.random() * 9, 0, Math.PI * 2);
+          c2.fill();
         }
+        // 剥がれた場所から虫が逃げ出す(欠け=逃げた虫)
+        if (T.kids.length < 60 && Math.random() < 0.42) {
+          const wx = -6 + ch.px / 80, wz = -6.4 + ch.py / 80;
+          const k = new Harvestman(wx, wz, 0.17 + Math.random() * 0.09, 0xa9ba7d);
+          k.noClamp = true;
+          const cz = wz < -0.6 ? -3.4 : 3.4;   // 属する図形の中心から外へ
+          const a = Math.atan2(wx, wz - cz) + (Math.random() - 0.5) * 0.9;
+          k.target.set(Math.sin(a) * (STAGE_HALF_W + 8), 0, Math.cos(a) * (STAGE_HALF_D + 8));
+          k.speed = 3 + Math.random() * 1.5;
+          T.kids.push(k);
+        }
+      }
+      c2.globalCompositeOperation = 'source-over';
+      T.tex.needsUpdate = true;
+      if (T.idx >= T.chunks.length) scene.remove(T.plane);   // 全部虫になった
+    }
+    for (let i = T.kids.length - 1; i >= 0; i--) {   // 逃げ切った虫は消す
+      const k = T.kids[i];
+      k.update(dt, time);
+      if (Math.abs(k.pos.x) > STAGE_HALF_W + 4 || Math.abs(k.pos.z) > STAGE_HALF_D + 4) {
+        k.dispose(); T.kids.splice(i, 1);
       }
     }
   }
