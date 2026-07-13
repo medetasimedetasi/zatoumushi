@@ -1870,23 +1870,30 @@ updateMinimap();
 // 完全にソリッドな●とstartが、実は過密な子どもたちの塊。startを押すと
 // 「きわ」から虫がほどけて逃げ出し、逃げた分だけ図形がボロボロ欠けていく(フェードなし)
 const titleState = { active: true, eroding: false, plane: null, tex: null, ctx: null,
-  chunks: [], idx: 0, acc: 0, kids: [], done: false, sweepT: 0 };
+  chunks: [], idx: 0, acc: 0, kids: [], done: false, sweepT: 0, fadeT: 0 };
+// タイトルの色: 濃い若草色(彩度高め) → クリック後に薄い色へ抜けてから分裂する
+const DOT_DEEP = new THREE.Color('#4f9a1e'), DOT_PALE = new THREE.Color('#cfe4ac');
+const START_DEEP = new THREE.Color('#478c1a'), START_PALE = new THREE.Color('#c6dca0');
+function drawTitleShapes(c, dotStyle, startStyle) {
+  c.fillStyle = dotStyle;
+  c.beginPath(); c.arc(480, 240, 192, 0, Math.PI * 2); c.fill();
+  c.fillStyle = startStyle;
+  c.font = '700 150px Consolas, monospace';   // 太め・大きめ: 細線の削り残しを防ぎ、しっかり分裂しきる
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('start', 480, 784);
+}
 function buildTitle() {
   const T = titleState;
   document.body.classList.add('title');   // UI・ミニマップ・矢印は隠す
   // 1枚のキャンバスに●とstartを描く(ワールド x:-6..6, z:-6.4..5.2 / 80px per unit)
   const cv = document.createElement('canvas'); cv.width = 960; cv.height = 928;
   const c = cv.getContext('2d');
-  c.fillStyle = '#6f7f4a';                            // マットな緑の●
-  c.beginPath(); c.arc(480, 240, 192, 0, Math.PI * 2); c.fill();
-  c.fillStyle = '#55663a';
-  c.font = '400 126px Consolas, monospace';
-  c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillText('start', 480, 784);
+  drawTitleShapes(c, DOT_DEEP.getStyle(), START_DEEP.getStyle());   // 濃い若草色で描く
   T.ctx = c;
   T.tex = new THREE.CanvasTexture(cv);
+  T.tex.colorSpace = THREE.SRGBColorSpace;   // キャンバスの色をそのまま(トーンマップで褪せさせない)
   T.plane = new THREE.Mesh(new THREE.PlaneGeometry(12, 11.6),
-    new THREE.MeshBasicMaterial({ map: T.tex, transparent: true, depthWrite: false }));
+    new THREE.MeshBasicMaterial({ map: T.tex, transparent: true, depthWrite: false, toneMapped: false }));
   T.plane.rotation.x = -Math.PI / 2;
   T.plane.position.set(0, 0.95, -0.6);
   scene.add(T.plane);
@@ -2039,6 +2046,14 @@ function step(dt) {
     const T = titleState;
     if (T.eroding && T.plane.parent) {
       const c2 = T.ctx;
+      if (T.fadeT < 1) {   // クリック直後: 濃い若草色 → 薄い色へ色が抜ける(分裂の前段。約0.5秒)
+        T.fadeT = Math.min(T.fadeT + dt / 0.5, 1);
+        c2.clearRect(0, 0, 960, 928);
+        drawTitleShapes(c2,
+          DOT_DEEP.clone().lerp(DOT_PALE, T.fadeT).getStyle(),
+          START_DEEP.clone().lerp(START_PALE, T.fadeT).getStyle());
+        T.tex.needsUpdate = true;
+      } else {
       c2.globalCompositeOperation = 'destination-out';
       if (T.idx < T.chunks.length) {
         T.acc += dt * (T.chunks.length / 3.2);   // 全体で約3.2秒かけて崩壊
@@ -2073,10 +2088,13 @@ function step(dt) {
           const ch = T.chunks[T.cleanIdx++];
           c2.beginPath(); c2.arc(ch.px, ch.py, 26, 0, Math.PI * 2); c2.fill();
         }
-        if (T.cleanIdx >= T.chunks.length) { scene.remove(T.plane); T.done = true; }   // 全部虫になった
+        if (T.cleanIdx >= T.chunks.length) {   // 全部虫になった: 念のため全消去してから撤去(残りカスゼロ)
+          c2.clearRect(0, 0, 960, 928); scene.remove(T.plane); T.done = true;
+        }
       }
       c2.globalCompositeOperation = 'source-over';
       T.tex.needsUpdate = true;
+      }
     }
     if (T.done) T.sweepT += dt;   // OP完了後の経過。残った虫を掃討する猶予を計る
     for (let i = T.kids.length - 1; i >= 0; i--) {   // 逃げ切った虫は消す
