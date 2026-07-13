@@ -491,6 +491,7 @@ function tripodGroup(side, pair) {           // side:+1右 -1左
 }
 
 const spiders = [];
+let crowdRenderFrame = 0;   // 大群時の脚LODを個体ごとにずらすためのフレーム番号
 // 成体のダメージ表現: HPが減るほど脚を自切して落とす(回復で生えなおす)。
 // 歩行は表示だけの問題(this.posは脚に依存せず進む)なので破綻しないが、
 // 見た目が崩れたら false にすれば従来の8本脚に戻せる安全弁。
@@ -524,6 +525,8 @@ class Harvestman {
     this.lastLand = -1;
     this.sagT = 1;               // 着地直後の沈み(1=終了)
     this.gaitSeed = Math.random();
+    this.lodPhase = Math.floor(Math.random() * 3);
+    this.crowdShadowOff = false;
     this.cycleJitter = 0.92 + Math.random() * 0.16;
     this.suppY = groundH(x, z); this.suppPitch = 0; this.suppRoll = 0;
     this.prey = null; this.pounceT = 0;           // 捕食プレス(押さえ込み)
@@ -553,6 +556,7 @@ class Harvestman {
     body.scale.set(1, 0.76, 1.3);
     body.castShadow = !opts.noShadow;   // タイトルの大量発生用に影を省ける
     this.group.add(body);
+    this.bodyMesh = body;
 
     const femurGeo = new THREE.CylinderGeometry(0.022 * scale, 0.032 * scale, 1, 6);
     const tibiaGeo = new THREE.CylinderGeometry(0.008 * scale, 0.020 * scale, 1, 6);
@@ -628,6 +632,15 @@ class Harvestman {
 
   update(dt, time) {
     if (LEG_AUTOTOMY && this.isAdult) this.syncLegLoss();
+    // 80匹以上では子どもの影だけを省略。形状は残し、影用の追加描画を大幅に減らす。
+    if (!this.isAdult) {
+      const shadowOff = spiders.length >= 80;
+      if (shadowOff !== this.crowdShadowOff) {
+        this.crowdShadowOff = shadowOff;
+        this.bodyMesh.castShadow = !shadowOff;
+        for (const leg of this.legs) leg.femur.castShadow = leg.tibia.castShadow = !shadowOff && !leg.sensory;
+      }
+    }
     // --- steering ---
     _v1.subVectors(this.target, this.pos); _v1.y = 0;
     const dist = _v1.length();
@@ -791,6 +804,12 @@ class Harvestman {
     this.group.updateMatrixWorld();
 
     // --- IK + render ---
+    // 大群時は子どもの脚IKを個体ごとに交互更新。止めずに位相をずらすので群れ全体では動き続けて見える。
+    const crowdN = spiders.length;
+    if (!this.isAdult && crowdN >= 70) {
+      const div = crowdN >= 120 ? 3 : 2;
+      if ((crowdRenderFrame + this.lodPhase) % div !== 0) return;
+    }
     const bodyR = 0.15 * this.s;
     for (const leg of this.legs) {
       if (leg.lost) continue;   // 自切した脚は描画しない
@@ -1733,15 +1752,90 @@ function runDeath(dt) {
 }
 
 // ================= ending: 制圧→接続→大群が成体を捕食→全員成体化→家々を蹂躙→暗転→Thanks =================
-let ending = null;   // {phase:'connect'|'swarm'|'consume'|'spread'|'fade'|'thanks', t, kids, adults}
+let ending = null;   // {phase:'connect'|'swarm'|'consume'|'world'|'fade'|'thanks', t, kids, adults}
 let endingSwarmCount = 0;
+let endingWorldGroup = null, endingCrowdBody = null, endingCrowdLegs = null;
+const endingCrowd = [];
+const END_TILE_X = STAGE_HALF_W * 2 + 2, END_TILE_Z = STAGE_HALF_D * 2 + 2;
+const END_CENTER_X = -(GRID - 1) * END_TILE_X * 0.5, END_CENTER_Z = -(GRID - 1) * END_TILE_Z * 0.5;
+const endDummy = new THREE.Object3D();
+function buildEndingWorld() {
+  if (endingWorldGroup) return;
+  endingWorldGroup = new THREE.Group(); scene.add(endingWorldGroup);
+  const tileGeo = new THREE.PlaneGeometry(STAGE_HALF_W * 2, STAGE_HALF_D * 2);
+  tileGeo.rotateX(-Math.PI / 2);
+  const tileMat = new THREE.MeshBasicMaterial({ color: 0xf4f2ea, side: THREE.DoubleSide });
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x9d978b, transparent: true, opacity: 0.42 });
+  for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
+    if (c === HQ_COL && r === HQ_ROW) continue;   // 現在表示中の本拠地が右下タイルになる
+    const x = (c - HQ_COL) * END_TILE_X, z = (r - HQ_ROW) * END_TILE_Z;
+    const tile = new THREE.Mesh(tileGeo, tileMat);
+    tile.position.set(x, -0.04, z); endingWorldGroup.add(tile);
+    const pts = [
+      new THREE.Vector3(x - STAGE_HALF_W, 0.01, z - STAGE_HALF_D), new THREE.Vector3(x + STAGE_HALF_W, 0.01, z - STAGE_HALF_D),
+      new THREE.Vector3(x + STAGE_HALF_W, 0.01, z + STAGE_HALF_D), new THREE.Vector3(x - STAGE_HALF_W, 0.01, z + STAGE_HALF_D),
+      new THREE.Vector3(x - STAGE_HALF_W, 0.01, z - STAGE_HALF_D)];
+    endingWorldGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+    // 遠景でも25面それぞれに生活圏があると分かる、紙模型のような簡略家屋
+    const rng = mulberry32(c * 97 + r * 131 + 700);
+    const houseN = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < houseN; i++) {
+      const h = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.4, 2.0),
+        new THREE.MeshBasicMaterial({ color: isNest(c, r) ? 0x88ad6d : isReinf(c, r) ? 0x5aa84e : 0xc9c2b2 }));
+      h.position.set(x + (rng() * 2 - 1) * 14, 0.7, z + (rng() * 2 - 1) * 7.5);
+      endingWorldGroup.add(h);
+    }
+  }
+  const maxCrowd = 220;
+  endingCrowdBody = new THREE.InstancedMesh(new THREE.SphereGeometry(0.24, 6, 5),
+    new THREE.MeshBasicMaterial({ color: 0x71804f, transparent: true, opacity: 0.92 }), maxCrowd);
+  endingCrowdBody.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  endingCrowdLegs = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.7, 0.045),
+    new THREE.MeshBasicMaterial({ color: 0x879764, transparent: true, opacity: 0.7, side: THREE.DoubleSide }), maxCrowd * 4);
+  endingCrowdLegs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  endingCrowdBody.count = endingCrowdLegs.count = 0;
+  endingWorldGroup.add(endingCrowdBody, endingCrowdLegs);
+}
+function addEndingCrowd(n) {
+  const minX = -(GRID - 1) * END_TILE_X - STAGE_HALF_W + 2, maxX = STAGE_HALF_W - 2;
+  const minZ = -(GRID - 1) * END_TILE_Z - STAGE_HALF_D + 2, maxZ = STAGE_HALF_D - 2;
+  for (let i = 0; i < n && endingCrowd.length < 220; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 0.7 + Math.random() * 1.1;
+    endingCrowd.push({ x: minX + Math.random() * (maxX - minX), z: minZ + Math.random() * (maxZ - minZ),
+      vx: Math.sin(a) * sp, vz: Math.cos(a) * sp, phase: Math.random() * 6.28 });
+  }
+}
+function updateEndingCrowd(dt, time) {
+  if (!endingCrowdBody) return;
+  const minX = -(GRID - 1) * END_TILE_X - STAGE_HALF_W + 1, maxX = STAGE_HALF_W - 1;
+  const minZ = -(GRID - 1) * END_TILE_Z - STAGE_HALF_D + 1, maxZ = STAGE_HALF_D - 1;
+  let li = 0;
+  for (let i = 0; i < endingCrowd.length; i++) {
+    const p = endingCrowd[i]; p.phase += dt * 5;
+    p.x += p.vx * dt; p.z += p.vz * dt;
+    if (p.x < minX || p.x > maxX) { p.vx *= -1; p.x = THREE.MathUtils.clamp(p.x, minX, maxX); }
+    if (p.z < minZ || p.z > maxZ) { p.vz *= -1; p.z = THREE.MathUtils.clamp(p.z, minZ, maxZ); }
+    endDummy.position.set(p.x, 0.32 + Math.abs(Math.sin(p.phase)) * 0.05, p.z);
+    endDummy.rotation.set(0, Math.atan2(p.vx, p.vz), 0); endDummy.scale.set(1, 0.72, 1.25);
+    endDummy.updateMatrix(); endingCrowdBody.setMatrixAt(i, endDummy.matrix);
+    for (let l = 0; l < 4; l++) {
+      endDummy.position.set(p.x, 0.05 + Math.max(0, Math.sin(p.phase + l)) * 0.025, p.z);
+      endDummy.rotation.set(-Math.PI / 2, 0, l * Math.PI / 4 + Math.sin(p.phase + l) * 0.08);
+      endDummy.scale.set(1, 1, 1); endDummy.updateMatrix(); endingCrowdLegs.setMatrixAt(li++, endDummy.matrix);
+    }
+  }
+  endingCrowdBody.count = endingCrowd.length; endingCrowdLegs.count = li;
+  endingCrowdBody.instanceMatrix.needsUpdate = endingCrowdLegs.instanceMatrix.needsUpdate = true;
+}
 function startEnding() {
-  ending = { phase: 'connect', t: 0, kids: [], adults: [], spawnT: 0 };
+  ending = { phase: 'connect', t: 0, kids: [], adults: [], spawnT: 0,
+    audioBase: bgmAudio ? bgmAudio.volume : bgmVol };
   clickTarget = null; stageIntent = null;
   statsEl.textContent = '';
 }
 function showThanks() {
   isGameClear = true;
+  if (bgmAudio) bgmAudio.volume = 0;
   const cleared = Object.keys(stageRemain).filter(k => stageRemain[k] === 0).length;
   const el = document.getElementById('thanks');
   const msg = 'THANK YOU FOR PLAYING!';
@@ -1787,45 +1881,47 @@ function runEnding(dt) {
       e.kids.length = 0;
       for (const sp of spiders) sp.dispose();   // 旧個体は全て新しい成体に生まれ変わる
       spiders.length = 0;
-      for (let i = 0; i < 16; i++) {
+      buildEndingWorld();
+      addEndingCrowd(72);
+      for (let i = 0; i < 18; i++) {
         const a = Math.random() * Math.PI * 2, r = 2 + Math.random() * 5;
         const ad = new Harvestman(Math.sin(a) * r, Math.cos(a) * r * 0.7, 0.9 + Math.random() * 0.25, 0x8fa065);
         ad.noClamp = true;
         e.adults.push(ad);
       }
-      e.phase = 'spread'; e.t = 0;
+      e.phase = 'world'; e.t = 0; e.spawnT = 0;
     }
-  } else if (e.phase === 'spread') {
-    // みんな成体になり、画面が引き、家々に襲いかかっていく
-    zoomScale = Math.min(1.85, zoomScale + dt * 0.075);
+  } else if (e.phase === 'world') {
+    // 最終拠点から5x5世界全体へ一続きに引き、全域を成体の群れで埋める
+    const pull = THREE.MathUtils.smoothstep(Math.min(e.t / 9, 1), 0, 1);
+    zoomScale = THREE.MathUtils.lerp(1.18, 5.8, pull);
+    camPanX = THREE.MathUtils.lerp(0, END_CENTER_X, pull);
+    camPanZ = THREE.MathUtils.lerp(0, END_CENTER_Z, pull);
     frameCamera();
     e.spawnT -= dt;
-    if (e.spawnT <= 0 && e.adults.length < 46) {
-      e.spawnT = 0.32;
-      const a = Math.random() * Math.PI * 2;
-      const ad = new Harvestman(Math.sin(a) * (STAGE_HALF_W + 3), Math.cos(a) * (STAGE_HALF_D + 3), 0.85 + Math.random() * 0.35, 0x8fa065);
-      ad.noClamp = true;
-      e.adults.push(ad);
-    }
+    if (e.spawnT <= 0 && endingCrowd.length < 200) { e.spawnT = 0.18; addEndingCrowd(4); }
     for (const ad of e.adults) {
       ad.raidT = (ad.raidT || 0) - dt;
       if (ad.raidT <= 0) {
-        ad.raidT = 1.6 + Math.random() * 2;
-        if (rocks.length && Math.random() < 0.8) {
-          const rk = rocks[(Math.random() * rocks.length) | 0];
-          ad.target.set(rk.x + (Math.random() - 0.5) * 1.6, 0, rk.z + (Math.random() - 0.5) * 1.6);
-        } else ad.target.set((Math.random() * 2 - 1) * STAGE_HALF_W, 0, (Math.random() * 2 - 1) * STAGE_HALF_D);
-        if (Math.random() < 0.45) addStain(ad.pos.x, ad.pos.z);   // 蹂躙の痕跡が増えていく
+        ad.raidT = 1.4 + Math.random() * 2;
+        ad.target.set(-(Math.random() * (GRID - 1)) * END_TILE_X + (Math.random() * 2 - 1) * STAGE_HALF_W,
+          0, -(Math.random() * (GRID - 1)) * END_TILE_Z + (Math.random() * 2 - 1) * STAGE_HALF_D);
       }
     }
-    if (e.t > 10) {
+    updateEndingCrowd(dt, time);
+    if (bgmAudio && !bgmMuted) {
+      const loud = Math.min(1, Math.max(e.audioBase, bgmVol) * 1.4);
+      bgmAudio.volume += (loud - bgmAudio.volume) * (1 - Math.exp(-0.8 * dt));
+    }
+    if (e.t > 13) {
       e.phase = 'fade'; e.t = 0;
-      endingSwarmCount = e.adults.length + 44;
+      endingSwarmCount = e.adults.length + endingCrowd.length;
       flashEl.style.transition = 'opacity 2.4s ease';
       flashEl.style.background = '#0e0e0c';
       flashEl.style.opacity = '1';
     }
   } else if (e.phase === 'fade') {
+    if (bgmAudio) bgmAudio.volume = Math.max(0, Math.min(1, 1 - e.t / 2.6) * Math.min(1, Math.max(e.audioBase, bgmVol) * 1.4));
     if (e.t > 2.6) { e.phase = 'thanks'; showThanks(); }
   }
   if (e.phase === 'connect' || e.phase === 'swarm' || e.phase === 'consume')
@@ -2088,6 +2184,7 @@ function step(dt) {
   if (isGameOver) { renderer.render(scene, camera); return; }
   if (ending) { runEnding(dt); return; }
   simTime += dt;
+  crowdRenderFrame++;
   const time = simTime;
 
   // --- opening title: きわから虫がほどけて図形が欠けていく ---
@@ -2259,24 +2356,35 @@ function step(dt) {
 
   for (const sp of spiders) sp.update(dt, time);
 
-  // --- separation: 個体同士が団子にならないよう反発(成体は押されない) ---
-  for (let i = 0; i < spiders.length; i++) {
-    const a = spiders[i];
-    for (let j = i + 1; j < spiders.length; j++) {
-      const b = spiders[j];
-      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
-      const minD = 0.62 * (a.s + b.s) + 0.12;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > minD * minD || d2 < 1e-6) continue;
-      const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
-      if (a.isAdult) { b.pos.x += dx * push * 2; b.pos.z += dz * push * 2; }
-      else if (b.isAdult) { a.pos.x -= dx * push * 2; a.pos.z -= dz * push * 2; }
-      else {
-        a.pos.x -= dx * push; a.pos.z -= dz * push;
-        b.pos.x += dx * push; b.pos.z += dz * push;
+  // --- separation: 空間グリッドで近所だけ反発。100匹超でも全組合せを調べない ---
+  {
+    const cellSize = 1.55, buckets = new Map();
+    for (let i = 0; i < spiders.length; i++) {
+      const sp = spiders[i], gx = Math.floor(sp.pos.x / cellSize), gz = Math.floor(sp.pos.z / cellSize);
+      const key = gx + ',' + gz;
+      let arr = buckets.get(key); if (!arr) buckets.set(key, arr = []);
+      arr.push(i);
+    }
+    for (let i = 0; i < spiders.length; i++) {
+      const a = spiders[i], gx = Math.floor(a.pos.x / cellSize), gz = Math.floor(a.pos.z / cellSize);
+      for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
+        const arr = buckets.get((gx + ox) + ',' + (gz + oz)); if (!arr) continue;
+        for (const j of arr) {
+          if (j <= i) continue;
+          const b = spiders[j], dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+          const minD = 0.62 * (a.s + b.s) + 0.12, d2 = dx * dx + dz * dz;
+          if (d2 > minD * minD || d2 < 1e-6) continue;
+          const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
+          if (a.isAdult) { b.pos.x += dx * push * 2; b.pos.z += dz * push * 2; }
+          else if (b.isAdult) { a.pos.x -= dx * push * 2; a.pos.z -= dz * push * 2; }
+          else {
+            a.pos.x -= dx * push; a.pos.z -= dz * push;
+            b.pos.x += dx * push; b.pos.z += dz * push;
+          }
+        }
       }
     }
-    // 注意: ここでclampStageしない(見切れ遷移でzが枠外に出るのを潰してしまう。各自のupdateでクランプ済み)
+    // ここではclampしない。ステージ遷移中の見切れ移動を各個体のupdateに任せる。
   }
 
   updateCells(dt);   // 編成セルのひき打ち(スロットを動かす)→ 各兵はそのスロットへ追従
