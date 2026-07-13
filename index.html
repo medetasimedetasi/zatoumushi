@@ -2249,6 +2249,7 @@ buildTitle();
 // ================= BGM: 3曲を順番に再生してループ(startクリックで開始) =================
 const BGM_TRACKS = ['BGM/01Mosslight Hush.mp3', 'BGM/02Slow Salt Drift.mp3', 'BGM/03Forest Drift.mp3'];
 let bgmIdx = 0, bgmAudio = null, bgmMuted = false, bgmVol = 0.5, bgmFading = false;
+const BGM_GAIN = 0.9;
 const SFX = {
   item: ['SE/アイテムを食べる/かさっ.wav'],
   human: [
@@ -2262,7 +2263,7 @@ const SFX = {
   clear: ['SE/clear/clear.wav'],
   start: ['SE/startボタンを押す/start.wav']
 };
-const SFX_GAIN = { item: 1.0, human: 0.003, defeat: 1.0, clear: 1.0, start: 1.0 };
+const SFX_GAIN = { item: 1.0, human: 0.02, defeat: 1.0, clear: 1.0, start: 1.0 };
 const activeSfx = new Set();
 function playSfx(name) {
   const choices = SFX[name];
@@ -2296,7 +2297,7 @@ function startBGM() {
   const t0 = performance.now();
   const fade = () => {
     const k = Math.min((performance.now() - t0) / 1500, 1);
-    if (bgmAudio) bgmAudio.volume = bgmVol * k;
+    if (bgmAudio) bgmAudio.volume = bgmVol * BGM_GAIN * k;
     if (k < 1) requestAnimationFrame(fade); else bgmFading = false;
   };
   fade();
@@ -2313,7 +2314,7 @@ function setMuted(m) {
 }
 function setVol(v) {
   bgmVol = THREE.MathUtils.clamp(v, 0, 1);
-  if (bgmAudio && !bgmFading) bgmAudio.volume = bgmVol;
+  if (bgmAudio && !bgmFading) bgmAudio.volume = bgmVol * BGM_GAIN;
   for (const a of activeSfx)
     a.volume = THREE.MathUtils.clamp(Number(a.dataset.sfxGain) * bgmVol, 0, 1);
   updateAudioUI();
