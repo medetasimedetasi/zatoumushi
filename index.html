@@ -153,7 +153,8 @@ scene.background = new THREE.Color(0xf7f6f2);
 // ---- fixed top-down orthographic camera (old-school single-screen) ----
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
 const ELEV = 76 * Math.PI / 180;           // 76° from horizontal ≈ ほぼ真上、わずかに傾け
-let zoomScale = 1.18;                      // デフォルトからやや引き
+const DEFAULT_ZOOM = 1.26;                 // ホイール約1段階分、初期状態から引いて見せる
+let zoomScale = DEFAULT_ZOOM;
 const camDir = new THREE.Vector3(0, Math.sin(ELEV), Math.cos(ELEV));   // +z側から: 画面右=+x
 let camPanX = 0, camPanZ = 0;   // 敗北演出などで注視点をずらす
 function frameCamera() {
@@ -2064,7 +2065,7 @@ function runEnding(dt) {
   } else if (e.phase === 'world') {
     // 最終拠点から5x5世界全体へ一続きに引き、全域を成体の群れで埋める
     const pull = THREE.MathUtils.smoothstep(Math.min(e.t / 9, 1), 0, 1);
-    zoomScale = THREE.MathUtils.lerp(1.18, 5.8, pull);
+    zoomScale = THREE.MathUtils.lerp(DEFAULT_ZOOM, 5.8, pull);
     camPanX = THREE.MathUtils.lerp(0, END_CENTER_X, pull);
     camPanZ = THREE.MathUtils.lerp(0, END_CENTER_Z, pull);
     frameCamera();
@@ -2261,7 +2262,7 @@ const SFX = {
   clear: ['SE/clear/clear.wav'],
   start: ['SE/startボタンを押す/start.wav']
 };
-const SFX_GAIN = { item: 1.0, human: 0.10, defeat: 1.0, clear: 1.0, start: 1.0 };
+const SFX_GAIN = { item: 1.0, human: 0.04, defeat: 1.0, clear: 1.0, start: 1.0 };
 function playSfx(name) {
   const choices = SFX[name];
   if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
