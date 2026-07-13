@@ -1249,6 +1249,7 @@ function rebuildStains() {
 let clearFx = null;
 function showClearText() {
   if (clearFx) scene.remove(clearFx.m);
+  playSfx('clear');
   const cv = document.createElement('canvas'); cv.width = 1024; cv.height = 256;
   const c = cv.getContext('2d');
   c.font = 'italic 900 200px "Arial Black", Arial, sans-serif';
@@ -1897,7 +1898,7 @@ function runDeath(dt) {
   adult.group.position.y -= fall * adult.bodyH * 0.72;   // 沈む
   adult.group.rotation.x += fall * 0.55;                 // 前のめりに倒れる
   // 「Bust...」を地面に(clearと同じスタイル)
-  if (e.t > 1.1 && !e.word) e.word = makeGroundWord('Bust...', e.cx, e.cz);
+  if (e.t > 1.1 && !e.word) { e.word = makeGroundWord('Bust...', e.cx, e.cz); playSfx('defeat'); }
   if (e.word) e.word.material.opacity = Math.min((e.t - 1.1) / 0.7, 1) * 0.5;
   // やり直しへ
   if (e.t > 3.4 && !e.done) {
@@ -2236,6 +2237,7 @@ function buildTitle() {
 }
 function startGame() {
   if (!titleState.active) return;
+  playSfx('start');
   titleState.active = false;
   titleState.eroding = true;                 // きわから崩壊開始
   document.body.classList.remove('title');   // UIがフェードイン
@@ -2246,6 +2248,35 @@ buildTitle();
 // ================= BGM: 3曲を順番に再生してループ(startクリックで開始) =================
 const BGM_TRACKS = ['BGM/01Mosslight Hush.mp3', 'BGM/02Slow Salt Drift.mp3', 'BGM/03Forest Drift.mp3'];
 let bgmIdx = 0, bgmAudio = null, bgmMuted = false, bgmVol = 0.5, bgmFading = false;
+const SFX = {
+  item: ['SE/アイテムを食べる/かさっ.wav'],
+  human: [
+    'SE/叫び声/A_single_adult_human_#2-1783920789723.wav',
+    'SE/叫び声/A_single_adult_human_#3-1783920804330.wav',
+    'SE/叫び声/scream_A_hoarse_voic_#2-1783921036369.wav',
+    'SE/叫び声/scream_distant_#1-1783921441733.wav',
+    'SE/叫び声/scream_distant_#2-1783921382738.wav',
+    'SE/叫び声/scream_distant_#4-1783921254352.wav',
+    'SE/叫び声/scream_distant_low_m_#1-1783921496231.wav',
+    'SE/叫び声/scream_distant_low_m_#1-1783921645156.wav',
+    'SE/叫び声/scream_distant_low_m_#3-1783921557099.wav',
+    'SE/叫び声/scream_distant_low_m_#4-1783921557100.wav',
+    'SE/叫び声/scream_distant_low_m_#4-1783921636864.wav',
+    'SE/叫び声/scream_distant_low_m_#4-1783921645158.wav',
+    'SE/叫び声/scream_women_#4-1783921144195.wav'
+  ],
+  defeat: ['SE/敗北文字/敗北.wav'],
+  clear: ['SE/clear/Small_card_sliding_#3-1783941054667.wav'],
+  start: ['SE/startボタンを押す/Deep_warm_sine_chime_#4-1783940532310.wav']
+};
+const SFX_GAIN = { item: 0.55, human: 0.10, defeat: 0.72, clear: 0.65, start: 0.6 };
+function playSfx(name) {
+  const choices = SFX[name];
+  if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
+  const a = new Audio(encodeURI(choices[Math.floor(Math.random() * choices.length)]));
+  a.volume = THREE.MathUtils.clamp(SFX_GAIN[name] || 0.5, 0, 1);
+  a.play().catch(() => {});
+}
 function playBGMCurrent() {
   bgmAudio.src = encodeURI(BGM_TRACKS[bgmIdx]);   // スペースを%20に
   bgmAudio.play().catch(() => {});
@@ -2456,9 +2487,9 @@ function step(dt) {
         if (!h.caught && da < 4.2 && ds < ndc) { ndc = ds; nearEnemy = h; }
       }
       if (nearEnemy) sp.target.copy(nearEnemy.pos);
-      else if (sp.pos.distanceTo(adult.pos) > 2.6) sp.target.copy(adult.pos);
+      else if (sp.pos.distanceTo(adult.pos) > 3.4) sp.target.copy(adult.pos);
       else if (sp.retargetT <= 0) {
-        sp.retargetT = 1.2 + Math.random(); const a = Math.random() * 6.28, r = 1.1 + Math.random() * 1.2;
+        sp.retargetT = 1.2 + Math.random(); const a = Math.random() * 6.28, r = 1.8 + Math.random() * 1.1;
         sp.target.set(adult.pos.x + Math.sin(a) * r, 0, adult.pos.z + Math.cos(a) * r);
       }
       continue;
@@ -2534,6 +2565,7 @@ function step(dt) {
     // 成体は押さえた勢いで即取り込み、子どもは捕食し終わる頃に新しい子どもが生まれる
     if (!sp.prey.eaten && sp.pounceT >= (sp.isAdult ? 0.5 : 0.85)) {
       const h = sp.prey; h.eaten = true;
+      playSfx('human');
       addStain(h.pos.x, h.pos.z);   // 死亡跡: 黒いシミが最後まで残る
       addChild(spawnChildFrom(h));
       const idx = humans.indexOf(h);
@@ -2654,6 +2686,7 @@ function step(dt) {
     eater.target.copy(eater.pos);   // 食事中は動かない
     if (!it.consumed && eater.eatT >= 0.55) {
       it.consumed = true;
+      playSfx('item');
       if (it.type === 'corpse') {
         if (adult.maxHp < 8) {
           adult.maxHp += 1; adult.hp = Math.min(adult.hp + 1, adult.maxHp);
