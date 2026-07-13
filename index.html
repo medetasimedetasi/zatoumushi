@@ -2262,7 +2262,7 @@ const SFX = {
   clear: ['SE/clear/clear.wav'],
   start: ['SE/startボタンを押す/start.wav']
 };
-const SFX_GAIN = { item: 1.0, human: 0.02, defeat: 1.0, clear: 1.0, start: 1.0 };
+const SFX_GAIN = { item: 1.0, human: 0.003, defeat: 1.0, clear: 1.0, start: 1.0 };
 function playSfx(name) {
   const choices = SFX[name];
   if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
