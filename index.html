@@ -2263,14 +2263,20 @@ const SFX = {
   start: ['SE/startボタンを押す/start.wav']
 };
 const SFX_GAIN = { item: 1.0, human: 0.003, defeat: 1.0, clear: 1.0, start: 1.0 };
+const activeSfx = new Set();
 function playSfx(name) {
   const choices = SFX[name];
   if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
   // 日本語や空白を含むフォルダ名も安全にURL化する
   const src = choices[Math.floor(Math.random() * choices.length)].split('/').map(encodeURIComponent).join('/');
   const a = new Audio(src);
-  a.volume = THREE.MathUtils.clamp(SFX_GAIN[name] || 0.5, 0, 1);
-  a.play().catch(() => {});
+  a.dataset.sfxGain = SFX_GAIN[name] ?? 0.5;
+  a.volume = THREE.MathUtils.clamp(a.dataset.sfxGain * bgmVol, 0, 1);
+  activeSfx.add(a);
+  const release = () => activeSfx.delete(a);
+  a.addEventListener('ended', release, { once: true });
+  a.addEventListener('error', release, { once: true });
+  a.play().catch(release);
 }
 function playBGMCurrent() {
   bgmAudio.src = encodeURI(BGM_TRACKS[bgmIdx]);   // スペースを%20に
@@ -2299,10 +2305,17 @@ function startBGM() {
 const muteBtn = document.getElementById('mutebtn');
 const volSlider = document.getElementById('volslider');
 function updateAudioUI() { muteBtn.textContent = (bgmMuted || bgmVol <= 0) ? '🔇' : '🔊'; }
-function setMuted(m) { bgmMuted = m; if (bgmAudio) bgmAudio.muted = m; updateAudioUI(); }
+function setMuted(m) {
+  bgmMuted = m;
+  if (bgmAudio) bgmAudio.muted = m;
+  for (const a of activeSfx) a.muted = m;
+  updateAudioUI();
+}
 function setVol(v) {
   bgmVol = THREE.MathUtils.clamp(v, 0, 1);
   if (bgmAudio && !bgmFading) bgmAudio.volume = bgmVol;
+  for (const a of activeSfx)
+    a.volume = THREE.MathUtils.clamp(Number(a.dataset.sfxGain) * bgmVol, 0, 1);
   updateAudioUI();
 }
 muteBtn.addEventListener('click', () => setMuted(!bgmMuted));
