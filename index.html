@@ -100,18 +100,15 @@
 <body>
 <div id="ui"><span id="stats"></span><span id="skillui"><i class="dot"></i>Skill — long Push</span></div>
 <div id="skillhelp">
-  <svg viewBox="0 0 560 270" aria-label="Long Pushの操作説明">
+  <svg viewBox="0 0 560 270" aria-label="Long Push">
     <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M245 54c0-25 18-41 38-41s38 16 38 41v75c0 20-14 36-32 36h-12c-18 0-32-16-32-36z"/>
       <path d="M283 14v61m-38 0h76"/><circle cx="283" cy="48" r="12"/>
-      <path d="M96 191c57-40 112-40 165-3m44 0c51-37 106-37 159 3"/>
-      <circle cx="283" cy="191" r="48"/><circle cx="283" cy="191" r="5" fill="currentColor"/>
-      <path d="M283 165v-31m-9 10 9-10 9 10"/>
+      <path d="M91 189c72-42 132-45 181-20"/><path d="M260 158l12 11-16 5"/>
+      <path d="M322 21l6-16m13 20 12-13m-4 28 17-5"/>
     </g>
     <g fill="currentColor" text-anchor="middle">
-      <text x="283" y="104" font-size="24" font-family="cursive">Long Push</text>
-      <text x="283" y="230" font-size="15" font-family="sans-serif">1秒長押しで範囲を指定　離して発動</text>
-      <text x="283" y="254" font-size="12" font-family="sans-serif">味方を回復　敵を一瞬ひるませる</text>
+      <text x="150" y="215" font-size="30" font-family="cursive">long Push</text>
     </g>
   </svg>
 </div>
@@ -299,31 +296,38 @@ function addAccessPoint(x, z) {
 }
 let skillBeacon = null;
 function addSkillSite() {
-  // 青緑で半透明の巨大な同族死骸。細い均一線で、脚が遺構を囲むように巻いている。
-  const g = new THREE.Group(), cx = 4.5, cz = -1.0;
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x55c7ce, transparent: true, opacity: 0.55 });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(2.25, 18, 12),
-    new THREE.MeshBasicMaterial({ color: 0x64cbd0, wireframe: true, transparent: true, opacity: 0.34 }));
-  body.scale.set(1.1, 0.5, 1.45); body.rotation.z = 0.35;
-  body.position.set(cx, groundH(cx, cz) + 1.15, cz); g.add(body);
-  for (let i = 0; i < 8; i++) {
-    const side = i < 4 ? -1 : 1, n = i % 4;
-    const pts = [];
-    for (let j = 0; j <= 22; j++) {
-      const t = j / 22, curl = t * (1.1 + n * 0.15) * Math.PI;
-      const reach = 3.3 + n * 1.35;
-      const x = cx + side * (0.9 + t * reach) + Math.sin(curl) * (0.4 + t * 0.8);
-      const z = cz + (n - 1.5) * 0.75 + Math.cos(curl) * (0.25 + t * 1.1);
-      const y = groundH(x, z) + 0.10 + Math.sin(Math.PI * t) * (0.55 + n * 0.08);
-      pts.push(new THREE.Vector3(x, y, z));
-    }
-    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+  // 成体CGを拡大・変色して横倒しにした巨大な死骸。足先だけ内側へ巻く。
+  const g = new THREE.Group(), cx = 4.0, cz = -1.2;
+  const corpseMat = addRim(new THREE.MeshStandardMaterial({
+    color: 0x69cbd0, roughness: 0.48, transparent: true, opacity: 0.48
+  }), 0.22);
+  const body = adult.bodyMesh.clone(); body.material = corpseMat;
+  body.position.set(0, 0.28, 0); body.rotation.z = 1.08; g.add(body);
+  for (let i = 0; i < adult.legs.length; i++) {
+    const src = adult.legs[i], a = src.ang, side = src.side;
+    const reach = 1.55 + src.pair * 0.36 + (src.sensory ? 0.7 : 0);
+    const S = new THREE.Vector3(Math.sin(a) * 0.16, 0.25, Math.cos(a) * 0.16);
+    const K = new THREE.Vector3(Math.sin(a) * reach, 0.48 + (i % 2) * 0.11, Math.cos(a) * reach);
+    const curlA = a - side * (0.58 + src.pair * 0.08);
+    const F = new THREE.Vector3(Math.sin(curlA) * reach * 0.66, 0.12, Math.cos(curlA) * reach * 0.66);
+    const fe = src.femur.clone(), ti = src.tibia.clone(), kn = src.knee.clone();
+    fe.material = ti.material = kn.material = corpseMat;
+    placeSeg(fe, S, K); placeSeg(ti, K, F); kn.position.copy(K); g.add(fe, ti, kn);
   }
-  // 奥側の低い段差と、手前中央のスロープ。登ると死骸の脚が垂れて見える。
-  const rng = mulberry32(731);
-  for (let x = -8; x <= 14; x += 1.7) {
-    if (x > 0.5 && x < 4.2) continue;
-    addRock(x, -6.8 + Math.sin(x) * 0.35, 0.72 + rng() * 0.25, 0.42, rng, true);
+  g.scale.setScalar(2.7); g.rotation.y = -0.22;
+  g.position.set(cx, groundH(cx, cz) + 0.08, cz); rockGroup.add(g);
+
+  // 死骸を岩で隙間なく囲い、下側の入口だけを細長い隘路として残す。
+  const rng = mulberry32(731), wallN = 48;
+  for (let i = 0; i < wallN; i++) {
+    let a = i / wallN * Math.PI * 2;
+    if (a < 0.18 || a > Math.PI * 2 - 0.18) continue;   // +z側の入口
+    const x = cx + Math.sin(a) * 11.6, z = cz + Math.cos(a) * 7.5;
+    addRock(x, z, 0.88 + rng() * 0.18, 0.58 + rng() * 0.16, rng, true);
+  }
+  for (let z = 6.0; z <= 11.4; z += 1.35) {
+    addRock(cx - 2.05, z, 0.92, 0.62, rng, true);
+    addRock(cx + 2.05, z, 0.92, 0.62, rng, true);
   }
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.62, 0.22, 18),
     new THREE.MeshBasicMaterial({ color: 0x86d8dc, transparent: true, opacity: 0.38 }));
@@ -938,7 +942,6 @@ function colorUniqueChild(sp, type) {
   }
   uniqueState[type].living = sp; uniqueState[type].ever = true;
   pulse(sp.pos.x, sp.pos.z, type === 'assassin' ? 0x222222 : type === 'guardian' ? 0xff8eb0 : 0x8fa065);
-  popText(sp.pos.x, sp.pos.z, type === 'companion' ? 'コンパニオン' : type === 'slacker' ? 'サボリ' : type === 'assassin' ? 'アサシン' : '守護者');
 }
 function maybeMakeUnique(sp) {   // 新しく増えた個体だけが候補
   const count = spiders.length - 1;
@@ -1361,7 +1364,7 @@ function pulse(x, z, color = 0x8fa065) {
 }
 
 // ================= skill: Long Push =================
-const SKILL_RADIUS = 7, SKILL_COOLDOWN = 8;
+const SKILL_REACH = 7.2, SKILL_EFFECT_RADIUS = 1.75, SKILL_COOLDOWN = 8;
 let skillUnlocked = false, skillCooldown = 0;
 const skillUiEl = document.getElementById('skillui');
 const skillHelpEl = document.getElementById('skillhelp');
@@ -1369,20 +1372,28 @@ const skillAim = { active: false, x: 0, z: 0, fill: null, rim: null, dot: null }
 const skillCdPts = [];
 for (let i = 0; i <= 48; i++) {
   const a = i / 48 * Math.PI * 2;
-  skillCdPts.push(new THREE.Vector3(Math.sin(a) * 0.58, Math.cos(a) * 0.58, 0));
+  skillCdPts.push(new THREE.Vector3(Math.sin(a) * 0.64, Math.cos(a) * 0.64, 0));
 }
-const skillCdRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints(skillCdPts),
-  new THREE.LineBasicMaterial({ color: 0x65cbd0, transparent: true, opacity: 0.9, depthTest: false }));
-skillCdRing.visible = false; skillCdRing.renderOrder = 9; scene.add(skillCdRing);
+const skillCdGroup = new THREE.Group();
+const skillCdMat = new THREE.ShaderMaterial({
+  transparent: true, depthTest: false, side: THREE.DoubleSide,
+  uniforms: { progress: { value: 1 } },
+  vertexShader: 'varying vec2 vUv; void main(){vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
+  fragmentShader: 'varying vec2 vUv; uniform float progress; void main(){vec2 p=vUv-0.5; if(length(p)>0.5) discard; float a=(atan(p.x,p.y)+3.14159265)/6.2831853; if(a>progress) discard; gl_FragColor=vec4(0.447,0.804,0.820,0.82);}'
+});
+const skillCdFill = new THREE.Mesh(new THREE.PlaneGeometry(1.16, 1.16), skillCdMat);
+const skillCdOutline = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(skillCdPts.slice(0, -1)),
+  new THREE.LineBasicMaterial({ color: 0x8c9694, transparent: true, opacity: 0.78, depthTest: false }));
+skillCdGroup.add(skillCdFill, skillCdOutline); skillCdGroup.visible = false; skillCdGroup.renderOrder = 9; scene.add(skillCdGroup);
 function makeSkillAim() {
-  const fill = new THREE.Mesh(new THREE.CircleGeometry(SKILL_RADIUS, 64),
+  const fill = new THREE.Mesh(new THREE.CircleGeometry(SKILL_EFFECT_RADIUS, 64),
     new THREE.MeshBasicMaterial({ color: 0x70d1d5, transparent: true, opacity: 0.23, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
   fill.rotation.x = -Math.PI / 2;
   const rimPts = [];
   for (let i = 0; i < 64; i += 2) {
     for (const j of [i, i + 1]) {
       const a = j / 64 * Math.PI * 2;
-      rimPts.push(new THREE.Vector3(Math.sin(a) * SKILL_RADIUS, 0, Math.cos(a) * SKILL_RADIUS));
+      rimPts.push(new THREE.Vector3(Math.sin(a) * SKILL_EFFECT_RADIUS, 0, Math.cos(a) * SKILL_EFFECT_RADIUS));
     }
   }
   const rim = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(rimPts),
@@ -1400,8 +1411,10 @@ function setSkillAimVisible(v) {
   skillAim.fill.visible = skillAim.rim.visible = skillAim.dot.visible = v;
 }
 function updateSkillAim(x, z) {
-  skillAim.x = THREE.MathUtils.clamp(x, -STAGE_HALF_W, STAGE_HALF_W);
-  skillAim.z = THREE.MathUtils.clamp(z, -STAGE_HALF_D, STAGE_HALF_D);
+  let dx = x - adult.pos.x, dz = z - adult.pos.z, d = Math.hypot(dx, dz);
+  if (d > SKILL_REACH) { dx *= SKILL_REACH / d; dz *= SKILL_REACH / d; }
+  skillAim.x = THREE.MathUtils.clamp(adult.pos.x + dx, -STAGE_HALF_W, STAGE_HALF_W);
+  skillAim.z = THREE.MathUtils.clamp(adult.pos.z + dz, -STAGE_HALF_D, STAGE_HALF_D);
   const y = groundH(skillAim.x, skillAim.z) + 0.07;
   skillAim.fill.position.set(skillAim.x, y, skillAim.z);
   skillAim.rim.position.set(skillAim.x, y + 0.01, skillAim.z);
@@ -1411,13 +1424,13 @@ function castLongPush() {
   if (!skillAim.active || skillCooldown > 0) return;
   const x = skillAim.x, z = skillAim.z;
   for (const sp of spiders) {
-    if (Math.hypot(sp.pos.x - x, sp.pos.z - z) <= SKILL_RADIUS && sp.hp < sp.maxHp) {
+    if (Math.hypot(sp.pos.x - x, sp.pos.z - z) <= SKILL_EFFECT_RADIUS && sp.hp < sp.maxHp) {
       sp.hp = Math.min(sp.maxHp, sp.hp + 1); pulse(sp.pos.x, sp.pos.z, 0x62cbd0);
     }
   }
   for (const h of humans) {
     const dx = h.pos.x - x, dz = h.pos.z - z, d = Math.hypot(dx, dz);
-    if (d > SKILL_RADIUS || h.caught) continue;
+    if (d > SKILL_EFFECT_RADIUS || h.caught) continue;
     h.stunT = Math.max(h.stunT, 1.0); h.burstLeft = 0; h.fireCd = Math.max(h.fireCd, 1.0);
     const k = 1.35 / Math.max(d, 0.5);
     h.pos.x += dx * k; h.pos.z += dz * k; clampStage(h.pos);
@@ -1438,11 +1451,11 @@ function updateSkill(dt) {
   skillCooldown = Math.max(0, skillCooldown - dt);
   if (skillCooldown > 0) {
     const remain = skillCooldown / SKILL_COOLDOWN;
-    skillCdRing.visible = true;
-    skillCdRing.geometry.setDrawRange(0, Math.max(2, Math.ceil(49 * remain)));
-    skillCdRing.position.set(adult.pos.x, adult.bodyY + 1.0, adult.pos.z);
-    skillCdRing.quaternion.copy(camera.quaternion);
-  } else skillCdRing.visible = false;
+    skillCdGroup.visible = true;
+    skillCdMat.uniforms.progress.value = remain;
+    skillCdGroup.position.set(adult.pos.x, adult.bodyY + 0.7, adult.pos.z - 1.9);
+    skillCdGroup.quaternion.copy(camera.quaternion);
+  } else skillCdGroup.visible = false;
 }
 
 // ================= items: 虫の死骸(世界観: 同種の兵器の残骸。武装地帯に転がる) =================
@@ -1908,7 +1921,7 @@ function spawnHumans(entryX = 0, entryZ = 0) {
     }
   }
   // 既存人数は維持し、d5以降に密集機動部隊を純増する。本拠地は+26人で計78人。
-  const tacticalExtra = isHQ ? 26 : d >= 7 ? 12 : d >= 5 ? 6 : 0;
+  const tacticalExtra = (isHQ ? 26 : d >= 7 ? 12 : d >= 5 ? 6 : 0) + (isSkillStage(stageCol, stageRow) ? 6 : 0);
   if (stageRemain[k] === undefined)
     stageRemain[k] = (isHQ ? 52 : fort ? 16 : d === 0 ? 0
       : (6 + d * 3 + (d >= 4 ? (d - 3) * 3 : 0)) + (isReinf(stageCol, stageRow) ? 12 : 0)) + tacticalExtra;
@@ -1925,6 +1938,10 @@ function spawnHumans(entryX = 0, entryZ = 0) {
     return;
   }
   // 追加戦術部隊。各班の隊員は密度を保ち、班単位で壁沿いに機動する。
+  if (isSkillStage(stageCol, stageRow)) {
+    spawnRelaySquad(4.0, 4.8, 0);   // 隘路の奥から入口方向へ切れ目なく射撃
+    n -= 6;
+  }
   if (isHQ) {
     spawnRelaySquad(-10.5, -5.8, 0.45);
     spawnRelaySquad(10.5, -5.8, -0.45);
