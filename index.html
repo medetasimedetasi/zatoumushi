@@ -2269,7 +2269,7 @@ const SFX = {
   clear: ['SE/clear/Small_card_sliding_#3-1783941054667.wav'],
   start: ['SE/startボタンを押す/Deep_warm_sine_chime_#4-1783940532310.wav']
 };
-const SFX_GAIN = { item: 0.55, human: 0.10, defeat: 0.72, clear: 0.65, start: 0.6 };
+const SFX_GAIN = { item: 0.55, human: 0.25, defeat: 0.72, clear: 0.65, start: 1.0 };
 function playSfx(name) {
   const choices = SFX[name];
   if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
