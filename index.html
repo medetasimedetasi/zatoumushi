@@ -53,6 +53,7 @@
   .mm.hq { background:#d96b5f; border-color:#c05a4f; }
   .mm.cleared { background:#c9c6bb; border-color:#b7b3a6; }
   .mm.nest { background:#7fb56a; border-color:#5f9a4c; }
+  .mm.reinforce { background:#e8c14a; border-color:#c9a52c; }
   .mm.cur { outline:2px solid #8fa065; outline-offset:1px; }
   #audioui {
     position:fixed; right:14px; top:12px; display:flex; align-items:center; gap:8px;
@@ -108,10 +109,12 @@ const STAGE_HALF_D = 12;   // z: -12..12
 // カメラは +z 側から見下ろす: 画面右=+x(col+1)、画面下=+z(row+1)
 const GRID = 5;
 const HQ_COL = 4, HQ_ROW = 4;
-const NEST_COL = 0, NEST_ROW = 1;   // 開始の一つ下: 味方の巣(成体の死骸→子ども補充所)
+const NEST_COL = 2, NEST_ROW = 2;   // ミニマップど真ん中: 味方の巣(常設スポナー。敵もいる)
 const FORT_COL = 4, FORT_ROW = 0;   // 右上: 大きな家のある砦(隘路+定期排出)
+const REINF_COL = 4, REINF_ROW = 3;   // 本拠地の一つ上: 増援拠点(緑の家→子ども20匹)
 const isNest = (c, r) => c === NEST_COL && r === NEST_ROW;
 const isFort = (c, r) => c === FORT_COL && r === FORT_ROW;
+const isReinf = (c, r) => c === REINF_COL && r === REINF_ROW;
 let stageCol = 0, stageRow = 0;
 const skey = (c, r) => c + ',' + r;
 const stageDist = (c, r) => c + r;   // 開始からのマンハッタン距離 = 難度
@@ -317,16 +320,38 @@ function addBigHouse(x, z) {
   fortHouse = { x, z };
 }
 let fortHouse = null;
+const greenHouseMat = new THREE.MeshStandardMaterial({ color: 0x5aa84e, roughness: 0.9 });
+const greenRoofMat = new THREE.MeshStandardMaterial({ color: 0x3d7c34, roughness: 0.9 });
+let reinfHouse = null;   // 増援拠点の緑の家(アクセスで子ども20匹)
+function addGreenHouse(x, z) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.9, 2.6), greenHouseMat);
+  body.position.y = 0.92;
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.3, 1.2, 4), greenRoofMat);
+  roof.rotation.y = Math.PI / 4; roof.position.y = 2.4;
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.1), doorMat);
+  door.position.set(0, 0.55, 1.31);
+  // 屋根に小さな緑ランプ(アクセス可能の目印)
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8),
+    new THREE.MeshStandardMaterial({ color: 0x224422, emissive: 0x6ef06e, emissiveIntensity: 1.2 }));
+  lamp.position.y = 3.15;
+  body.castShadow = roof.castShadow = body.receiveShadow = true;
+  g.add(body, roof, door, lamp);
+  g.position.set(x, groundH(x, z), z);
+  rockGroup.add(g);
+  rocks.push({ x, z, r: 1.7, mesh: body });   // 弾を防ぐ遮蔽物でもある
+  reinfHouse = { x, z, lamp };
+}
 function buildRocks() {
   clearRocks();
-  nestNode = null; nestLight = null; fortHouse = null;
+  nestNode = null; nestLight = null; fortHouse = null; reinfHouse = null;
   const d = stageDist(stageCol, stageRow);
   const rng = mulberry32(stageCol * 97 + stageRow * 131 + 7);
   hqGapAngles.length = 0;
   if (isNest(stageCol, stageRow)) {
-    // 味方の巣: 中央を盛り土のリングで囲う。死骸を食べたら補充ノードが出現
+    // 味方の巣: 中央を盛り土のリングで囲う。補充ノードは最初から常設
     addMoundRing(0, 0, 4.6, 30, rng);
-    if (nestUnlocked) addNestNode(0, 0);
+    addNestNode(0, 0);
   } else if (isFort(stageCol, stageRow)) {
     // 右上の砦: 奥に大きな家、その手前に岩の壁(隘路=1箇所だけ開く)
     addBigHouse(13, -6);
@@ -350,6 +375,14 @@ function buildRocks() {
     for (let i = 0; i < 4; i++)
       addRock((rng() * 2 - 1) * (STAGE_HALF_W - 4), (rng() * 2 - 1) * (STAGE_HALF_D - 3), 0.8 + rng() * 0.6, 0.55, rng, true);
     addAccessPoint(0, 0);   // 最終目標: 要塞中央のアクセスポイント
+  } else if (isReinf(stageCol, stageRow)) {
+    // 増援拠点: 隅に緑の家(アクセスで子ども20匹)。人間の並列陣はspawnHumans側で健在
+    addGreenHouse(-13, 6);
+    for (let i = 0; i < 6; i++) {   // 通常どおり岩も散らす
+      const x = (rng() * 2 - 1) * (STAGE_HALF_W - 3), z = (rng() * 2 - 1) * (STAGE_HALF_D - 2.5);
+      if (Math.hypot(x, z) < 3.2 || Math.hypot(x + 13, z - 6) < 3.5) continue;
+      addRock(x, z, 0.7 + rng() * 1.0, 0.45 + rng() * 0.5, rng, true);
+    }
   } else {
     // 序盤は白紙のまま(d>=2で初めて岩が登場、奥ほど増える)
     const n = d < 2 ? 0 : 2 + (d - 2) * 2;
@@ -1200,17 +1233,7 @@ function buildItems() {
   items.length = 0;
   const d = stageDist(stageCol, stageRow);
   const isHQ = stageCol === HQ_COL && stageRow === HQ_ROW;
-  if (isNest(stageCol, stageRow)) {
-    // 巣の中央に成体の死骸を1つ置く(食べると巣ノードが解禁される)
-    const key = skey(stageCol, stageRow) + ':corpse';
-    if (!itemTaken[key]) {
-      const mesh = makeCorpseMesh();
-      mesh.position.set(0, groundH(0, 0), 0);
-      scene.add(mesh);
-      items.push({ type: 'corpse', x: 0, z: 0, mesh, key, nest: true });
-    }
-    return;
-  }
+  if (isNest(stageCol, stageRow)) return;   // 巣は中央スポナーが常設なのでアイテム無し
   const rng = mulberry32(stageCol * 271 + stageRow * 331 + 13);
   const defs = [];
   if (isHQ || (d >= 2 && rng() < 0.55)) defs.push('corpse');
@@ -1304,14 +1327,14 @@ function assignCell(h, cell, idx) {
 let curStageDiff = 0;   // 生成時の難度を Human/セルの索敵範囲に渡す
 const activeCells = [];   // 現ステージの編成セル(ひき打ち更新の対象)
 function spawnHumans(entryX = 0, entryZ = 0) {
-  const d = stageDist(stageCol, stageRow);
+  const nest = isNest(stageCol, stageRow);
+  const d = nest ? 2 : stageDist(stageCol, stageRow);   // 巣は中央だがd=2相当の敵を出す
   curStageDiff = d;
   activeCells.length = 0;
   const k = skey(stageCol, stageRow);
   const isHQ = stageCol === HQ_COL && stageRow === HQ_ROW;
   const fort = isFort(stageCol, stageRow);
   const preHQ = d === 7 && !isHQ && !fort;   // 最終拠点の一つ手前: 10人並列陣
-  if (isNest(stageCol, stageRow)) { stageRemain[k] = 0; return; }   // 巣は無人
   const randPos = () => {
     let x, z, tries = 0;
     do {
@@ -1334,7 +1357,8 @@ function spawnHumans(entryX = 0, entryZ = 0) {
   }
   // 人数: 後半ほど増量。砦は壁の奥の守備隊、本拠地は最大
   if (stageRemain[k] === undefined)
-    stageRemain[k] = isHQ ? 34 : fort ? 12 : d === 0 ? 0 : (5 + d * 2 + (d >= 4 ? (d - 3) * 3 : 0));
+    stageRemain[k] = isHQ ? 34 : fort ? 12 : d === 0 ? 0
+      : (5 + d * 2 + (d >= 4 ? (d - 3) * 3 : 0)) + (isReinf(stageCol, stageRow) ? 10 : 0);   // 増援拠点は敵多め
   let n = stageRemain[k];
   if (n <= 0) return;
   const armedRatio = isHQ ? 1 : [0, 0, 0.30, 0.5, 0.65, 0.75, 0.85, 0.92][Math.min(d, 7)];
@@ -1617,9 +1641,11 @@ for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
 }
 function updateMinimap() {
   for (const m of mmCells) {
+    const special = isNest(m.c, m.r) || isFort(m.c, m.r) || isReinf(m.c, m.r);
     m.el.classList.toggle('hq', m.c === HQ_COL && m.r === HQ_ROW);
     m.el.classList.toggle('nest', isNest(m.c, m.r));   // 巣は常に緑
-    m.el.classList.toggle('cleared', !isNest(m.c, m.r) && stageRemain[skey(m.c, m.r)] === 0);
+    m.el.classList.toggle('reinforce', isFort(m.c, m.r) || isReinf(m.c, m.r));   // 砦・増援拠点は黄色
+    m.el.classList.toggle('cleared', !special && stageRemain[skey(m.c, m.r)] === 0);
     m.el.classList.toggle('cur', m.c === stageCol && m.r === stageRow);
   }
 }
@@ -2043,12 +2069,7 @@ function step(dt) {
     eater.target.copy(eater.pos);   // 食事中は動かない
     if (!it.consumed && eater.eatT >= 0.55) {
       it.consumed = true;
-      if (it.nest) {
-        nestUnlocked = true;
-        if (!nestNode) addNestNode(0, 0);   // 死骸のあった場所に巣ノードが出現
-        nestSpawnT = 0;                       // 触れたら即1匹目
-        popText(eater.pos.x, eater.pos.z, '巣');
-      } else if (it.type === 'corpse') {
+      if (it.type === 'corpse') {
         if (adult.maxHp < 8) {
           adult.maxHp += 1; adult.hp = Math.min(adult.hp + 1, adult.maxHp);
           popText(adult.pos.x, adult.pos.z, '♡+1');
@@ -2083,6 +2104,22 @@ function step(dt) {
       }
     } else if (!near) {
       nestSpawnT = 0;   // 離れたら次のアクセスで即1匹目
+    }
+  }
+  // --- 増援拠点: 緑の家に成体が触れると子ども20匹が湧く(1回限り) ---
+  if (reinfHouse) {
+    const rk = skey(stageCol, stageRow);
+    const done = (stageFlags[rk] || {}).reinfDone;
+    if (reinfHouse.lamp)   // 未使用なら点滅、使用済みは消灯
+      reinfHouse.lamp.material.emissiveIntensity = done ? 0 : 0.9 + 0.5 * Math.sin(time * 4);
+    if (!done && Math.hypot(adult.pos.x - reinfHouse.x, adult.pos.z - reinfHouse.z) < 2.6) {
+      (stageFlags[rk] = stageFlags[rk] || {}).reinfDone = true;
+      for (let i = 0; i < 20; i++) {
+        const a = Math.random() * Math.PI * 2, r = 1.0 + Math.random() * 3.0;
+        spiders.push(new Harvestman(reinfHouse.x + Math.sin(a) * r, reinfHouse.z + Math.cos(a) * r, 0.36, 0xa9ba7d));
+      }
+      pulse(reinfHouse.x, reinfHouse.z, 0x6ef06e);
+      popText(reinfHouse.x, reinfHouse.z, '増援 ●+20');
     }
   }
   // --- 砦: 大きな家がclear後も弱い武装兵(pistol)を約5秒おきに排出。多すぎない範囲で ---
@@ -2220,6 +2257,8 @@ window.__state = () => ({
   legDebris: legDebrisMeshes.length,
   cells: activeCells.length,
   nestKids: spiders.filter(s => s.fromNest).length,
+  reinf: reinfHouse ? { x: +reinfHouse.x.toFixed(1), z: +reinfHouse.z.toFixed(1),
+    done: !!(stageFlags[skey(stageCol, stageRow)] || {}).reinfDone } : null,
 });
 </script>
 </body>
