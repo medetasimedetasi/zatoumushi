@@ -2251,29 +2251,23 @@ let bgmIdx = 0, bgmAudio = null, bgmMuted = false, bgmVol = 0.5, bgmFading = fal
 const SFX = {
   item: ['SE/アイテムを食べる/かさっ.wav'],
   human: [
-    'SE/叫び声/A_single_adult_human_#2-1783920789723.wav',
-    'SE/叫び声/A_single_adult_human_#3-1783920804330.wav',
-    'SE/叫び声/scream_A_hoarse_voic_#2-1783921036369.wav',
-    'SE/叫び声/scream_distant_#1-1783921441733.wav',
-    'SE/叫び声/scream_distant_#2-1783921382738.wav',
-    'SE/叫び声/scream_distant_#4-1783921254352.wav',
-    'SE/叫び声/scream_distant_low_m_#1-1783921496231.wav',
-    'SE/叫び声/scream_distant_low_m_#1-1783921645156.wav',
-    'SE/叫び声/scream_distant_low_m_#3-1783921557099.wav',
-    'SE/叫び声/scream_distant_low_m_#4-1783921557100.wav',
-    'SE/叫び声/scream_distant_low_m_#4-1783921636864.wav',
-    'SE/叫び声/scream_distant_low_m_#4-1783921645158.wav',
-    'SE/叫び声/scream_women_#4-1783921144195.wav'
+    'SE/叫び声/human_01.wav', 'SE/叫び声/human_02.wav', 'SE/叫び声/human_03.wav',
+    'SE/叫び声/human_04.wav', 'SE/叫び声/human_05.wav', 'SE/叫び声/human_06.wav',
+    'SE/叫び声/human_07.wav', 'SE/叫び声/human_08.wav', 'SE/叫び声/human_09.wav',
+    'SE/叫び声/human_10.wav', 'SE/叫び声/human_11.wav', 'SE/叫び声/human_12.wav',
+    'SE/叫び声/human_13.wav'
   ],
   defeat: ['SE/敗北文字/敗北.wav'],
-  clear: ['SE/clear/Small_card_sliding_#3-1783941054667.wav'],
-  start: ['SE/startボタンを押す/Deep_warm_sine_chime_#4-1783940532310.wav']
+  clear: ['SE/clear/clear.wav'],
+  start: ['SE/startボタンを押す/start.wav']
 };
-const SFX_GAIN = { item: 0.55, human: 0.25, defeat: 0.72, clear: 0.65, start: 1.0 };
+const SFX_GAIN = { item: 1.0, human: 1.0, defeat: 1.0, clear: 1.0, start: 1.0 };
 function playSfx(name) {
   const choices = SFX[name];
   if (!choices || !choices.length || bgmMuted || bgmVol <= 0) return;
-  const a = new Audio(encodeURI(choices[Math.floor(Math.random() * choices.length)]));
+  // 日本語や空白を含むフォルダ名も安全にURL化する
+  const src = choices[Math.floor(Math.random() * choices.length)].split('/').map(encodeURIComponent).join('/');
+  const a = new Audio(src);
   a.volume = THREE.MathUtils.clamp(SFX_GAIN[name] || 0.5, 0, 1);
   a.play().catch(() => {});
 }
