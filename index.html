@@ -54,7 +54,21 @@
   .mm.cleared { background:#c9c6bb; border-color:#b7b3a6; }
   .mm.nest { background:#7fb56a; border-color:#5f9a4c; }
   .mm.reinforce { background:#e8c14a; border-color:#c9a52c; }
+  .mm.skill { background:#76cbd0; border-color:#47aeb7; }
   .mm.cur { outline:2px solid #8fa065; outline-offset:1px; }
+  #skillui {
+    display:none; align-items:center; gap:6px; margin-left:12px; color:#6bbfc5;
+    font-size:12px; font-weight:600; letter-spacing:.04em;
+  }
+  #skillui.show { display:inline-flex; }
+  #skillui .dot { width:10px; height:10px; border-radius:50%; background:#68cbd0; box-shadow:0 0 5px #a8edf0; }
+  #skillhelp {
+    position:fixed; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
+    pointer-events:none; opacity:0; background:rgba(248,247,242,.28); transition:opacity .35s ease;
+    font-family:"Yu Gothic UI",sans-serif; color:#f8f8f4;
+  }
+  #skillhelp.show { opacity:1; }
+  #skillhelp svg { width:min(560px,76vw); height:auto; filter:drop-shadow(0 1px 3px rgba(0,0,0,.14)); }
   #audioui {
     position:fixed; right:14px; top:12px; display:flex; align-items:center; gap:8px;
     pointer-events:auto; font-family:"Yu Gothic UI",sans-serif;
@@ -84,7 +98,23 @@
 </script>
 </head>
 <body>
-<div id="ui"><span id="stats"></span></div>
+<div id="ui"><span id="stats"></span><span id="skillui"><i class="dot"></i>Skill — long Push</span></div>
+<div id="skillhelp">
+  <svg viewBox="0 0 560 270" aria-label="Long Pushの操作説明">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M245 54c0-25 18-41 38-41s38 16 38 41v75c0 20-14 36-32 36h-12c-18 0-32-16-32-36z"/>
+      <path d="M283 14v61m-38 0h76"/><circle cx="283" cy="48" r="12"/>
+      <path d="M96 191c57-40 112-40 165-3m44 0c51-37 106-37 159 3"/>
+      <circle cx="283" cy="191" r="48"/><circle cx="283" cy="191" r="5" fill="currentColor"/>
+      <path d="M283 165v-31m-9 10 9-10 9 10"/>
+    </g>
+    <g fill="currentColor" text-anchor="middle">
+      <text x="283" y="104" font-size="24" font-family="cursive">Long Push</text>
+      <text x="283" y="230" font-size="15" font-family="sans-serif">1秒長押しで範囲を指定　離して発動</text>
+      <text x="283" y="254" font-size="12" font-family="sans-serif">味方を回復　敵を一瞬ひるませる</text>
+    </g>
+  </svg>
+</div>
 <div id="thanks"></div>
 <div id="stagelabel"></div>
 <div id="edgeL" class="edge">◀</div>
@@ -113,9 +143,11 @@ const NEST_COL = 2, NEST_ROW = 2;   // ミニマップど真ん中: 味方の巣
 const FORT_COL = 4, FORT_ROW = 0;   // 右上: 大きな家のある砦(隘路+定期排出)
 const REINF_COL = 4, REINF_ROW = 3;    // 本拠地の一つ上: 増援拠点
 const REINF2_COL = 0, REINF2_ROW = 4;  // ミニマップ左下: 2つ目の増援拠点
+const SKILL_COL = 1, SKILL_ROW = 3;     // 下から2番目・左から2番目: Long Push取得地
 const isNest = (c, r) => c === NEST_COL && r === NEST_ROW;
 const isFort = (c, r) => c === FORT_COL && r === FORT_ROW;
 const isReinf = (c, r) => (c === REINF_COL && r === REINF_ROW) || (c === REINF2_COL && r === REINF2_ROW);
+const isSkillStage = (c, r) => c === SKILL_COL && r === SKILL_ROW;
 let stageCol = 0, stageRow = 0;
 const skey = (c, r) => c + ',' + r;
 const stageDist = (c, r) => c + r;   // 開始からのマンハッタン距離 = 難度
@@ -265,10 +297,47 @@ function addAccessPoint(x, z) {
   rockGroup.add(g);
   accessPoint = { x, z };
 }
+let skillBeacon = null;
+function addSkillSite() {
+  // 青緑で半透明の巨大な同族死骸。細い均一線で、脚が遺構を囲むように巻いている。
+  const g = new THREE.Group(), cx = 4.5, cz = -1.0;
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x55c7ce, transparent: true, opacity: 0.55 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(2.25, 18, 12),
+    new THREE.MeshBasicMaterial({ color: 0x64cbd0, wireframe: true, transparent: true, opacity: 0.34 }));
+  body.scale.set(1.1, 0.5, 1.45); body.rotation.z = 0.35;
+  body.position.set(cx, groundH(cx, cz) + 1.15, cz); g.add(body);
+  for (let i = 0; i < 8; i++) {
+    const side = i < 4 ? -1 : 1, n = i % 4;
+    const pts = [];
+    for (let j = 0; j <= 22; j++) {
+      const t = j / 22, curl = t * (1.1 + n * 0.15) * Math.PI;
+      const reach = 3.3 + n * 1.35;
+      const x = cx + side * (0.9 + t * reach) + Math.sin(curl) * (0.4 + t * 0.8);
+      const z = cz + (n - 1.5) * 0.75 + Math.cos(curl) * (0.25 + t * 1.1);
+      const y = groundH(x, z) + 0.10 + Math.sin(Math.PI * t) * (0.55 + n * 0.08);
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+  }
+  // 奥側の低い段差と、手前中央のスロープ。登ると死骸の脚が垂れて見える。
+  const rng = mulberry32(731);
+  for (let x = -8; x <= 14; x += 1.7) {
+    if (x > 0.5 && x < 4.2) continue;
+    addRock(x, -6.8 + Math.sin(x) * 0.35, 0.72 + rng() * 0.25, 0.42, rng, true);
+  }
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.62, 0.22, 18),
+    new THREE.MeshBasicMaterial({ color: 0x86d8dc, transparent: true, opacity: 0.38 }));
+  base.position.set(cx, groundH(cx, cz) + 0.12, cz);
+  const light = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 9),
+    new THREE.MeshStandardMaterial({ color: 0x4aafb5, emissive: 0x79f1f4, emissiveIntensity: 2.0 }));
+  light.position.set(cx, groundH(cx, cz) + 0.45, cz);
+  g.add(base, light); rockGroup.add(g);
+  skillBeacon = { x: cx, z: cz, light };
+}
 function clearRocks() {
   rockGroup.clear();
   rocks.length = 0;
-  accessPoint = null; apLight = null;
+  accessPoint = null; apLight = null; skillBeacon = null;
 }
 const moundMat = new THREE.MeshStandardMaterial({ color: 0x9a7f57, roughness: 1 });
 const houseMat = new THREE.MeshStandardMaterial({ color: 0xcfc7b4, roughness: 0.95 });
@@ -390,6 +459,8 @@ function buildRocks() {
       if (Math.hypot(x, z) < 3.2 || Math.hypot(x - houseX, z - houseZ) < 3.0) continue;
       addRock(x, z, 0.7 + rng() * 1.0, 0.45 + rng() * 0.5, rng, true);
     }
+  } else if (isSkillStage(stageCol, stageRow)) {
+    addSkillSite();
   } else {
     // 序盤は白紙のまま(d>=2で初めて岩が登場、奥ほど増える)
     const n = d < 2 ? 0 : 2 + (d - 2) * 2;
@@ -898,7 +969,11 @@ function makeCompanionCorpse(sp) {   // 元の子どものジオメトリを転�
 }
 function onChildDeath(sp) {
   if (!sp.uniqueKind) return;
-  const st = uniqueState[sp.uniqueKind]; if (st && st.living === sp) { st.living = null; st.readyAt = simTime + 60; }
+  const st = uniqueState[sp.uniqueKind];
+  if (st && st.living === sp) {
+    st.living = null;
+    st.readyAt = sp.uniqueKind === 'companion' ? simTime : simTime + 60;
+  }
   if (sp.uniqueKind === 'companion') {
     const k = skey(stageCol, stageRow), rec = { x: sp.pos.x, z: sp.pos.z, mesh: makeCompanionCorpse(sp), eater: null, eatT: 0, fallT: 0 };
     (companionCorpses[k] = companionCorpses[k] || []).push(rec);
@@ -980,6 +1055,7 @@ class Human {
     this.senseR = 5 + Math.max(0, curStageDiff - 2) * 2.0;
     this.cell = null; this.slotIdx = 0; this.slotSide = 0;   // 編成(braveのみ使用)
     this.burstLeft = 0; this.burstT = 0;                     // 隊長の連射
+    this.stunT = 0;                                         // Long Pushの怯み(射撃・移動停止)
     this.fireCd = 1.5 + Math.random() * 2;
     this.group = new THREE.Group();
     const mat = this.weapon ? this.weapon.mat : humanMat;
@@ -1003,6 +1079,12 @@ class Human {
       this.group.position.set(this.pos.x, y + 0.05, this.pos.z);
       this.group.rotation.x = -Math.PI * 0.46;
       this.group.rotation.z = Math.sin(time * 22) * 0.12;   // もがき
+      return;
+    }
+    if (this.stunT > 0) {
+      this.stunT -= dt;
+      this.group.position.set(this.pos.x, groundH(this.pos.x, this.pos.z) + 0.04, this.pos.z);
+      this.group.rotation.x = -0.28; this.group.rotation.z = Math.sin(time * 28) * 0.16;
       return;
     }
     this.group.rotation.x = 0; this.group.rotation.z = 0;   // 解放されたら起き上がる
@@ -1276,6 +1358,91 @@ function pulse(x, z, color = 0x8fa065) {
   m.position.set(x, groundH(x, z) + 0.05, z);
   m.userData.t = 0;
   scene.add(m); rings.push(m);
+}
+
+// ================= skill: Long Push =================
+const SKILL_RADIUS = 7, SKILL_COOLDOWN = 8;
+let skillUnlocked = false, skillCooldown = 0;
+const skillUiEl = document.getElementById('skillui');
+const skillHelpEl = document.getElementById('skillhelp');
+const skillAim = { active: false, x: 0, z: 0, fill: null, rim: null, dot: null };
+const skillCdPts = [];
+for (let i = 0; i <= 48; i++) {
+  const a = i / 48 * Math.PI * 2;
+  skillCdPts.push(new THREE.Vector3(Math.sin(a) * 0.58, Math.cos(a) * 0.58, 0));
+}
+const skillCdRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints(skillCdPts),
+  new THREE.LineBasicMaterial({ color: 0x65cbd0, transparent: true, opacity: 0.9, depthTest: false }));
+skillCdRing.visible = false; skillCdRing.renderOrder = 9; scene.add(skillCdRing);
+function makeSkillAim() {
+  const fill = new THREE.Mesh(new THREE.CircleGeometry(SKILL_RADIUS, 64),
+    new THREE.MeshBasicMaterial({ color: 0x70d1d5, transparent: true, opacity: 0.23, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
+  fill.rotation.x = -Math.PI / 2;
+  const rimPts = [];
+  for (let i = 0; i < 64; i += 2) {
+    for (const j of [i, i + 1]) {
+      const a = j / 64 * Math.PI * 2;
+      rimPts.push(new THREE.Vector3(Math.sin(a) * SKILL_RADIUS, 0, Math.cos(a) * SKILL_RADIUS));
+    }
+  }
+  const rim = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(rimPts),
+    new THREE.LineBasicMaterial({ color: 0x272725, transparent: true, opacity: 0.9, depthTest: false }));
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.28, 20),
+    new THREE.MeshBasicMaterial({ color: 0x58cbd0, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }));
+  dot.rotation.x = -Math.PI / 2;
+  fill.visible = rim.visible = dot.visible = false;
+  fill.renderOrder = 6; rim.renderOrder = 7; dot.renderOrder = 8;
+  scene.add(fill, rim, dot); Object.assign(skillAim, { fill, rim, dot });
+}
+makeSkillAim();
+function setSkillAimVisible(v) {
+  skillAim.active = v;
+  skillAim.fill.visible = skillAim.rim.visible = skillAim.dot.visible = v;
+}
+function updateSkillAim(x, z) {
+  skillAim.x = THREE.MathUtils.clamp(x, -STAGE_HALF_W, STAGE_HALF_W);
+  skillAim.z = THREE.MathUtils.clamp(z, -STAGE_HALF_D, STAGE_HALF_D);
+  const y = groundH(skillAim.x, skillAim.z) + 0.07;
+  skillAim.fill.position.set(skillAim.x, y, skillAim.z);
+  skillAim.rim.position.set(skillAim.x, y + 0.01, skillAim.z);
+  skillAim.dot.position.set(skillAim.x, y + 0.02, skillAim.z);
+}
+function castLongPush() {
+  if (!skillAim.active || skillCooldown > 0) return;
+  const x = skillAim.x, z = skillAim.z;
+  for (const sp of spiders) {
+    if (Math.hypot(sp.pos.x - x, sp.pos.z - z) <= SKILL_RADIUS && sp.hp < sp.maxHp) {
+      sp.hp = Math.min(sp.maxHp, sp.hp + 1); pulse(sp.pos.x, sp.pos.z, 0x62cbd0);
+    }
+  }
+  for (const h of humans) {
+    const dx = h.pos.x - x, dz = h.pos.z - z, d = Math.hypot(dx, dz);
+    if (d > SKILL_RADIUS || h.caught) continue;
+    h.stunT = Math.max(h.stunT, 1.0); h.burstLeft = 0; h.fireCd = Math.max(h.fireCd, 1.0);
+    const k = 1.35 / Math.max(d, 0.5);
+    h.pos.x += dx * k; h.pos.z += dz * k; clampStage(h.pos);
+    pulse(h.pos.x, h.pos.z, 0x62cbd0);
+  }
+  pulse(x, z, 0x4fbfc5); skillCooldown = SKILL_COOLDOWN;
+}
+function unlockSkill() {
+  if (skillUnlocked) return;
+  skillUnlocked = true; skillUiEl.classList.add('show');
+  if (skillBeacon) skillBeacon.light.material.emissiveIntensity = 0.25;
+  popText(adult.pos.x, adult.pos.z, 'Long Push', { color:'#61c6cc', scale:1.15 });
+  skillHelpEl.classList.add('show');
+  setTimeout(() => skillHelpEl.classList.remove('show'), 5000);
+  updateMinimap();
+}
+function updateSkill(dt) {
+  skillCooldown = Math.max(0, skillCooldown - dt);
+  if (skillCooldown > 0) {
+    const remain = skillCooldown / SKILL_COOLDOWN;
+    skillCdRing.visible = true;
+    skillCdRing.geometry.setDrawRange(0, Math.max(2, Math.ceil(49 * remain)));
+    skillCdRing.position.set(adult.pos.x, adult.bodyY + 1.0, adult.pos.z);
+    skillCdRing.quaternion.copy(camera.quaternion);
+  } else skillCdRing.visible = false;
 }
 
 // ================= items: 虫の死骸(世界観: 同種の兵器の残骸。武装地帯に転がる) =================
@@ -2124,10 +2291,11 @@ for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
 }
 function updateMinimap() {
   for (const m of mmCells) {
-    const special = isNest(m.c, m.r) || isFort(m.c, m.r) || isReinf(m.c, m.r);
+    const special = isNest(m.c, m.r) || isFort(m.c, m.r) || isReinf(m.c, m.r) || isSkillStage(m.c, m.r);
     m.el.classList.toggle('hq', m.c === HQ_COL && m.r === HQ_ROW);
     m.el.classList.toggle('nest', isNest(m.c, m.r));   // 巣は常に緑
     m.el.classList.toggle('reinforce', isFort(m.c, m.r) || isReinf(m.c, m.r));   // 砦・増援拠点は黄色
+    m.el.classList.toggle('skill', isSkillStage(m.c, m.r));   // Long Push取得地は青
     m.el.classList.toggle('cleared', !special && stageRemain[skey(m.c, m.r)] === 0);
     m.el.classList.toggle('cur', m.c === stageCol && m.r === stageRow);
   }
@@ -2159,6 +2327,7 @@ function goToStage(dx, dz) {
   }
   clickTarget = null;
   stageIntent = null;
+  pointerState.down = pointerState.aiming = false; clearTimeout(pointerState.timer); setSkillAimVisible(false);
   for (const sp of spiders) { sp.prey = null; sp.pounceT = 0; }   // 押さえ込みは中断
   for (const h of humans) h.dispose(); humans.length = 0;
   for (const b of bullets) scene.remove(b); bullets.length = 0;
@@ -2352,18 +2521,47 @@ function setClickTarget(x, z) {
   pulse(x, z, 0xc9a0a0);
 }
 const raycaster = new THREE.Raycaster();
+const pointerState = { down: false, aiming: false, timer: 0, hit: null };
+function pointerGround(ev) {
+  raycaster.setFromCamera(new THREE.Vector2(
+    (ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1), camera);
+  return raycaster.intersectObject(ground)[0];
+}
 addEventListener('pointerdown', (ev) => {
   if (death) { if (death.done) location.reload(); return; }   // 演出中は無視、完了後クリックでやり直し
   if (isGameOver || isGameClear) { location.reload(); return; }
   if (ending) return;                                    // エンディング中は操作不可
-  raycaster.setFromCamera(new THREE.Vector2(
-    (ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1), camera);
-  const hit = raycaster.intersectObject(ground)[0];
+  const hit = pointerGround(ev);
   if (titleState.active) {   // タイトル: start文字の付近をクリックした時だけ開始
     if (hit && Math.abs(hit.point.x) < 3.6 && hit.point.z > 2.2 && hit.point.z < 4.6) startGame();
     return;
   }
-  if (hit) setClickTarget(hit.point.x, hit.point.z);
+  if (!hit || ev.target.closest('#audioui')) return;
+  pointerState.down = true; pointerState.aiming = false; pointerState.hit = hit.point.clone();
+  clearTimeout(pointerState.timer);
+  pointerState.timer = setTimeout(() => {
+    if (!pointerState.down || !skillUnlocked || skillCooldown > 0) return;
+    pointerState.aiming = true; clickTarget = null; stageIntent = null;
+    adult.target.copy(adult.pos);
+    updateSkillAim(pointerState.hit.x, pointerState.hit.z); setSkillAimVisible(true);
+  }, 1000);
+});
+addEventListener('pointermove', (ev) => {
+  if (!pointerState.down) return;
+  const hit = pointerGround(ev); if (!hit) return;
+  pointerState.hit.copy(hit.point);
+  if (pointerState.aiming) updateSkillAim(hit.point.x, hit.point.z);
+});
+addEventListener('pointerup', (ev) => {
+  if (!pointerState.down) return;
+  clearTimeout(pointerState.timer);
+  if (pointerState.aiming) { castLongPush(); setSkillAimVisible(false); }
+  else if (pointerState.hit) setClickTarget(pointerState.hit.x, pointerState.hit.z);
+  pointerState.down = pointerState.aiming = false; pointerState.hit = null;
+});
+addEventListener('pointercancel', () => {
+  clearTimeout(pointerState.timer); pointerState.down = pointerState.aiming = false; pointerState.hit = null;
+  setSkillAimVisible(false);
 });
 addEventListener('wheel', (ev) => {
   zoomScale = THREE.MathUtils.clamp(zoomScale + ev.deltaY * 0.0008, 0.7, 1.8);
@@ -2392,6 +2590,11 @@ function step(dt) {
   simTime += dt;
   crowdRenderFrame++;
   const time = simTime;
+  updateSkill(dt);
+  if (skillBeacon) {
+    skillBeacon.light.material.emissiveIntensity = skillUnlocked ? 0.25 : 1.5 + Math.sin(time * 5) * 0.6;
+    if (!skillUnlocked && Math.hypot(adult.pos.x - skillBeacon.x, adult.pos.z - skillBeacon.z) < 1.25) unlockSkill();
+  }
 
   // --- opening title: きわから虫がほどけて図形が欠けていく ---
   {
@@ -2473,7 +2676,9 @@ function step(dt) {
   }
 
   // --- adult target: クリック指示 > 至近距離(3.2)だけ自動追尾 > 待機 ---
-  if (clickTarget) {
+  if (skillAim.active) {
+    adult.target.copy(adult.pos);   // 範囲指定中は成体をその場に止める
+  } else if (clickTarget) {
     adult.target.copy(clickTarget);
     if (adult.pos.distanceTo(clickTarget) < 0.4) clickTarget = null;
   } else {
@@ -2897,7 +3102,15 @@ window.__state = () => ({
   takara: { alive: takara.alive, col: takara.col, row: takara.row, x: +takara.x.toFixed(1), z: +takara.z.toFixed(1),
     eaten: takara.eaten, state: takara.state, respawnT: +takara.respawnT.toFixed(0), here: takaraHere(),
     corpsesHere: (takaraCorpses[skey(stageCol, stageRow)] || []).length },
+  skill: { unlocked: skillUnlocked, cooldown: +skillCooldown.toFixed(2), aiming: skillAim.active,
+    site: isSkillStage(stageCol, stageRow), beacon: !!skillBeacon },
 });
+window.__skillUnlock = () => { unlockSkill(); return __state().skill; };
+window.__skillCast = (x = adult.pos.x, z = adult.pos.z) => {
+  if (!skillUnlocked) unlockSkill();
+  skillCooldown = 0; updateSkillAim(x, z); setSkillAimVisible(true); castLongPush(); setSkillAimVisible(false);
+  return __state().skill;
+};
 window.__takara = () => __state().takara;
 window.__takaraHere = () => {   // テスト用: 生きた個体を今のエリアの中央付近に呼ぶ(死んでいれば復活)
   if (!takara.alive) spawnTakaraRandom();
