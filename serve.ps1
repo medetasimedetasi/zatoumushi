@@ -4,11 +4,11 @@ $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:8124/")
 $listener.Start()
 Write-Output "Serving $root on http://localhost:8124/"
-$mime = @{ ".html"="text/html; charset=utf-8"; ".js"="text/javascript"; ".css"="text/css"; ".png"="image/png"; ".jpg"="image/jpeg"; ".svg"="image/svg+xml"; ".json"="application/json" }
+$mime = @{ ".html"="text/html; charset=utf-8"; ".js"="text/javascript"; ".css"="text/css"; ".png"="image/png"; ".jpg"="image/jpeg"; ".svg"="image/svg+xml"; ".json"="application/json"; ".mp3"="audio/mpeg"; ".wav"="audio/wav"; ".ogg"="audio/ogg" }
 while ($listener.IsListening) {
     try {
         $ctx = $listener.GetContext()
-        $path = $ctx.Request.Url.AbsolutePath
+        $path = [System.Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)   # %20等を戻す(スペース入りファイル名対応)
         if ($ctx.Request.HttpMethod -eq "POST" -and $path -eq "/shot") {
             $reader = New-Object System.IO.StreamReader($ctx.Request.InputStream, $ctx.Request.ContentEncoding)
             $body = $reader.ReadToEnd()
