@@ -42,7 +42,7 @@
   .edge.off { opacity:0; }
   #minimap {
     position:fixed; left:14px; bottom:14px; display:grid;
-    grid-template-columns:repeat(4, 20px); grid-auto-rows:20px; gap:3px;
+    grid-template-columns:repeat(5, 20px); grid-auto-rows:20px; gap:3px;
     padding:6px; background:rgba(255,255,255,.6); border-radius:6px;
     box-shadow:0 1px 6px rgba(0,0,0,.10); pointer-events:none;
   }
@@ -111,10 +111,11 @@ const GRID = 5;
 const HQ_COL = 4, HQ_ROW = 4;
 const NEST_COL = 2, NEST_ROW = 2;   // ミニマップど真ん中: 味方の巣(常設スポナー。敵もいる)
 const FORT_COL = 4, FORT_ROW = 0;   // 右上: 大きな家のある砦(隘路+定期排出)
-const REINF_COL = 4, REINF_ROW = 3;   // 本拠地の一つ上: 増援拠点(緑の家→子ども20匹)
+const REINF_COL = 4, REINF_ROW = 3;    // 本拠地の一つ上: 増援拠点
+const REINF2_COL = 0, REINF2_ROW = 4;  // ミニマップ左下: 2つ目の増援拠点
 const isNest = (c, r) => c === NEST_COL && r === NEST_ROW;
 const isFort = (c, r) => c === FORT_COL && r === FORT_ROW;
-const isReinf = (c, r) => c === REINF_COL && r === REINF_ROW;
+const isReinf = (c, r) => (c === REINF_COL && r === REINF_ROW) || (c === REINF2_COL && r === REINF2_ROW);
 let stageCol = 0, stageRow = 0;
 const skey = (c, r) => c + ',' + r;
 const stageDist = (c, r) => c + r;   // 開始からのマンハッタン距離 = 難度
@@ -299,7 +300,11 @@ function addNestNode(x, z) {
     new THREE.MeshStandardMaterial({ color: 0x224422, emissive: 0x55dd66, emissiveIntensity: 1.1 }));
   nestLight.position.y = 0.16;
   rim.castShadow = true;
-  g.add(rim, hole, nestLight);
+  // スポナーの中心には、巣の目印として成体の死体を常設する(食事アイテムではない)。
+  const guardianCorpse = makeCorpseMesh();
+  guardianCorpse.scale.setScalar(0.72);
+  guardianCorpse.position.y = 0.12;
+  g.add(rim, hole, nestLight, guardianCorpse);
   g.position.set(x, groundH(x, z), z);
   rockGroup.add(g);
   nestNode = { x, z };
@@ -322,24 +327,24 @@ function addBigHouse(x, z) {
 let fortHouse = null;
 const greenHouseMat = new THREE.MeshStandardMaterial({ color: 0x5aa84e, roughness: 0.9 });
 const greenRoofMat = new THREE.MeshStandardMaterial({ color: 0x3d7c34, roughness: 0.9 });
-let reinfHouse = null;   // 増援拠点の緑の家(アクセスで子ども20匹)
+let reinfHouse = null;   // 増援拠点の緑の家(アクセスで子ども30匹)
 function addGreenHouse(x, z) {
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.9, 2.6), greenHouseMat);
-  body.position.y = 0.92;
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.3, 1.2, 4), greenRoofMat);
-  roof.rotation.y = Math.PI / 4; roof.position.y = 2.4;
-  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.1), doorMat);
-  door.position.set(0, 0.55, 1.31);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.05, 1.42, 1.9), greenHouseMat);
+  body.position.y = 0.69;
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(1.7, 0.9, 4), greenRoofMat);
+  roof.rotation.y = Math.PI / 4; roof.position.y = 1.78;
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.82), doorMat);
+  door.position.set(0, 0.41, 0.96);
   // 屋根に小さな緑ランプ(アクセス可能の目印)
   const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8),
     new THREE.MeshStandardMaterial({ color: 0x224422, emissive: 0x6ef06e, emissiveIntensity: 1.2 }));
-  lamp.position.y = 3.15;
+  lamp.position.y = 2.34;
   body.castShadow = roof.castShadow = body.receiveShadow = true;
   g.add(body, roof, door, lamp);
   g.position.set(x, groundH(x, z), z);
   rockGroup.add(g);
-  rocks.push({ x, z, r: 1.7, mesh: body });   // 弾を防ぐ遮蔽物でもある
+  rocks.push({ x, z, r: 1.25, mesh: body });   // 弾を防ぐ遮蔽物でもある
   reinfHouse = { x, z, lamp };
 }
 function buildRocks() {
@@ -376,11 +381,12 @@ function buildRocks() {
       addRock((rng() * 2 - 1) * (STAGE_HALF_W - 4), (rng() * 2 - 1) * (STAGE_HALF_D - 3), 0.8 + rng() * 0.6, 0.55, rng, true);
     addAccessPoint(0, 0);   // 最終目標: 要塞中央のアクセスポイント
   } else if (isReinf(stageCol, stageRow)) {
-    // 増援拠点: 隅に緑の家(アクセスで子ども20匹)。人間の並列陣はspawnHumans側で健在
-    addGreenHouse(-13, 6);
+    // 増援拠点: ステージ奥に小さな緑の家。左右の拠点で配置を反転する
+    const houseX = stageCol === REINF2_COL ? 13 : -13, houseZ = -8;
+    addGreenHouse(houseX, houseZ);
     for (let i = 0; i < 6; i++) {   // 通常どおり岩も散らす
       const x = (rng() * 2 - 1) * (STAGE_HALF_W - 3), z = (rng() * 2 - 1) * (STAGE_HALF_D - 2.5);
-      if (Math.hypot(x, z) < 3.2 || Math.hypot(x + 13, z - 6) < 3.5) continue;
+      if (Math.hypot(x, z) < 3.2 || Math.hypot(x - houseX, z - houseZ) < 3.0) continue;
       addRock(x, z, 0.7 + rng() * 1.0, 0.45 + rng() * 0.5, rng, true);
     }
   } else {
@@ -629,7 +635,7 @@ class Harvestman {
     else _v1.set(0, 0, 0);
     this.vel.lerp(_v1, 1 - Math.exp(-5 * dt));
     this.pos.addScaledVector(this.vel, dt);
-    // クランプ: 移動意図のある成体だけ、その方向の枠外(見切れ位置)まで出られる
+    // クランプ: ステージ移動中は子どもも少し外側まで使い、大群が端で団子になるのを抑える
     if (!this.noClamp) {   // タイトル散開・エンディングの個体は枠に縛られない
       let xMin = -STAGE_HALF_W + 0.3, xMax = STAGE_HALF_W - 0.3;
       let zMin = -STAGE_HALF_D + 0.4, zMax = STAGE_HALF_D - 0.4;
@@ -638,6 +644,11 @@ class Harvestman {
         else if (stageIntent.dx < 0) xMin = -STAGE_HALF_W - 2.2;
         else if (stageIntent.dz > 0) zMax = STAGE_HALF_D + 2.2;
         else if (stageIntent.dz < 0) zMin = -STAGE_HALF_D - 2.2;
+      } else if (!this.isAdult && stageIntent) {
+        if (stageIntent.dx > 0) xMax = STAGE_HALF_W + 0.9;
+        else if (stageIntent.dx < 0) xMin = -STAGE_HALF_W - 0.9;
+        else if (stageIntent.dz > 0) zMax = STAGE_HALF_D + 0.9;
+        else if (stageIntent.dz < 0) zMin = -STAGE_HALF_D - 0.9;
       }
       this.pos.x = THREE.MathUtils.clamp(this.pos.x, xMin, xMax);
       this.pos.z = THREE.MathUtils.clamp(this.pos.z, zMin, zMax);
@@ -1066,17 +1077,18 @@ function rebuildLegDebris() {   // ステージ切替時に現ステージの脚
 
 // ================= fx: popup text(頭上の「♡+1」等、控えめ) =================
 const pops = [];
-function popText(x, z, text) {
+function popText(x, z, text, opts = {}) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 96;
   const c = cv.getContext('2d');
   c.font = 'bold 52px "Yu Gothic UI", sans-serif';
   c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillStyle = '#5c6b3c';
+  c.fillStyle = opts.color || '#5c6b3c';
   c.fillText(text, 128, 48);
   const m = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: new THREE.CanvasTexture(cv), transparent: true, opacity: 0.9, depthTest: false }));
-  m.scale.set(2.4, 0.9, 1);
-  m.position.set(x, groundH(x, z) + 1.7, z);
+    map: new THREE.CanvasTexture(cv), transparent: true, opacity: opts.opacity || 0.96, depthTest: false, toneMapped: false }));
+  const sc = opts.scale || 1;
+  m.scale.set(2.4 * sc, 0.9 * sc, 1);
+  m.position.set(x, groundH(x, z) + (opts.height || 1.7), z);
   m.userData.t = 0;
   scene.add(m); pops.push(m);
 }
@@ -1254,7 +1266,7 @@ function makeTakaraMesh(gray) {
     const foot = new THREE.Vector3(Math.sin(a) * reach, 0.0, Math.cos(a) * reach);
     const seg = new THREE.Mesh(takaraLegGeo, lmat);
     placeSeg(seg, sh, foot); g.add(seg);
-    legs.push({ seg, sh, foot: foot.clone(), i });
+    legs.push({ seg, sh, foot: foot.clone(), i, side });
   }
   return { group: g, legs };
 }
@@ -1363,8 +1375,13 @@ function feedTakara(child) {   // 子が1匹食べる→赤子(fast型)に化け
 function animateTakaraLegs(m, time, moving) {
   for (let i = 0; i < m.legs.length; i++) {
     const L = m.legs[i];
-    const w = moving ? Math.sin(time * 18 + i * 1.3) * 0.045 : Math.sin(time * 3 + i) * 0.01;
-    _tkv.copy(L.foot); _tkv.y = Math.max(0, 0.02 + w * 2);
+    const phase = time * (moving ? 16 : 3) + L.i * Math.PI + (L.side > 0 ? 0 : Math.PI);
+    const stride = moving ? Math.sin(phase) * (0.055 + (3 - L.i) * 0.012) : Math.sin(phase) * 0.008;
+    const lift = moving ? Math.max(0, Math.sin(phase)) * 0.075 : Math.max(0, Math.sin(phase)) * 0.012;
+    _tkv.copy(L.foot);
+    _tkv.z += stride;                 // 前後に掻く動き
+    _tkv.x += L.side * Math.cos(phase) * (moving ? 0.018 : 0.004);
+    _tkv.y = 0.02 + lift;
     placeSeg(L.seg, L.sh, _tkv);
   }
 }
@@ -1558,10 +1575,10 @@ function spawnHumans(entryX = 0, entryZ = 0) {
       h.uncounted = true; humans.push(h);
     }
   }
-  // 人数: 後半ほど増量。砦は壁の奥の守備隊、本拠地は最大
+  // 人数: 全域を増量。後半ほど傾斜を強め、本拠地は特に厚くする
   if (stageRemain[k] === undefined)
-    stageRemain[k] = isHQ ? 34 : fort ? 12 : d === 0 ? 0
-      : (5 + d * 2 + (d >= 4 ? (d - 3) * 3 : 0)) + (isReinf(stageCol, stageRow) ? 10 : 0);   // 増援拠点は敵多め
+    stageRemain[k] = isHQ ? 52 : fort ? 16 : d === 0 ? 0
+      : (6 + d * 3 + (d >= 4 ? (d - 3) * 3 : 0)) + (isReinf(stageCol, stageRow) ? 12 : 0);   // 増援拠点は敵多め
   let n = stageRemain[k];
   if (n <= 0) return;
   const armedRatio = isHQ ? 1 : [0, 0, 0.30, 0.5, 0.65, 0.75, 0.85, 0.92][Math.min(d, 7)];
@@ -1871,8 +1888,10 @@ function goToStage(dx, dz) {
   const ddx = newX - adult.pos.x, ddz = newZ - adult.pos.z;
   for (const sp of spiders) {
     sp.translate(ddx, ddz);
-    sp.pos.x = THREE.MathUtils.clamp(sp.pos.x, -STAGE_HALF_W + 1, STAGE_HALF_W - 1);
-    clampStage(sp.pos);
+    // 大群を同じ線に押し潰さないよう、子どもは入場直後も端寄りの広い範囲を使える
+    const marginX = sp.isAdult ? 1 : 0.25, marginZ = sp.isAdult ? 0.4 : 0.2;
+    sp.pos.x = THREE.MathUtils.clamp(sp.pos.x, -STAGE_HALF_W + marginX, STAGE_HALF_W - marginX);
+    sp.pos.z = THREE.MathUtils.clamp(sp.pos.z, -STAGE_HALF_D + marginZ, STAGE_HALF_D - marginZ);
   }
   clickTarget = null;
   stageIntent = null;
@@ -2353,13 +2372,14 @@ function step(dt) {
         k.fromNest = true;
         spiders.push(k);
         pulse(nestNode.x, nestNode.z, 0x55dd66);
-        popText(nestNode.x, nestNode.z, '●+1');
+        // 画面上で巣の少し上に、HP表示と同程度の濃さで出す
+        popText(nestNode.x, nestNode.z - 1.45, '●+1', { color: '#405020', opacity: 1, scale: 1.08, height: 1.9 });
       }
     } else if (!near) {
       nestSpawnT = 0;   // 離れたら次のアクセスで即1匹目
     }
   }
-  // --- 増援拠点: 緑の家に成体が触れると子ども20匹が湧く(1回限り) ---
+  // --- 増援拠点: 緑の家に成体が触れると子ども30匹が湧く(各拠点1回限り) ---
   if (reinfHouse) {
     const rk = skey(stageCol, stageRow);
     const done = (stageFlags[rk] || {}).reinfDone;
@@ -2367,12 +2387,12 @@ function step(dt) {
       reinfHouse.lamp.material.emissiveIntensity = done ? 0 : 0.9 + 0.5 * Math.sin(time * 4);
     if (!done && Math.hypot(adult.pos.x - reinfHouse.x, adult.pos.z - reinfHouse.z) < 2.6) {
       (stageFlags[rk] = stageFlags[rk] || {}).reinfDone = true;
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 30; i++) {
         const a = Math.random() * Math.PI * 2, r = 1.0 + Math.random() * 3.0;
         spiders.push(new Harvestman(reinfHouse.x + Math.sin(a) * r, reinfHouse.z + Math.cos(a) * r, 0.36, 0xa9ba7d));
       }
       pulse(reinfHouse.x, reinfHouse.z, 0x6ef06e);
-      popText(reinfHouse.x, reinfHouse.z, '増援 ●+20');
+      popText(reinfHouse.x, reinfHouse.z, '増援 ●+30', { color: '#405020', scale: 1.08 });
     }
   }
   // --- 砦: 大きな家がclear後も弱い武装兵(pistol)を約5秒おきに排出。多すぎない範囲で ---
