@@ -317,17 +317,17 @@ function addSkillSite() {
   g.scale.setScalar(2.7); g.rotation.y = -0.22;
   g.position.set(cx, groundH(cx, cz) + 0.08, cz); rockGroup.add(g);
 
-  // 死骸を岩で隙間なく囲い、下側の入口だけを細長い隘路として残す。
+  // 死骸を岩で隙間なく囲い、左側の入口だけを細長い隘路として残す。
   const rng = mulberry32(731), wallN = 48;
   for (let i = 0; i < wallN; i++) {
     let a = i / wallN * Math.PI * 2;
-    if (a < 0.18 || a > Math.PI * 2 - 0.18) continue;   // +z側の入口
+    if (Math.abs(a - Math.PI * 1.5) < 0.18) continue;   // -x側（画面左）の入口
     const x = cx + Math.sin(a) * 11.6, z = cz + Math.cos(a) * 7.5;
     addRock(x, z, 0.88 + rng() * 0.18, 0.58 + rng() * 0.16, rng, true);
   }
-  for (let z = 6.0; z <= 11.4; z += 1.35) {
-    addRock(cx - 2.05, z, 0.92, 0.62, rng, true);
-    addRock(cx + 2.05, z, 0.92, 0.62, rng, true);
+  for (let x = -19.0; x <= cx - 11.0; x += 1.35) {
+    addRock(x, cz - 2.05, 0.92, 0.62, rng, true);
+    addRock(x, cz + 2.05, 0.92, 0.62, rng, true);
   }
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.62, 0.22, 18),
     new THREE.MeshBasicMaterial({ color: 0x86d8dc, transparent: true, opacity: 0.38 }));
@@ -1939,7 +1939,7 @@ function spawnHumans(entryX = 0, entryZ = 0) {
   }
   // 追加戦術部隊。各班の隊員は密度を保ち、班単位で壁沿いに機動する。
   if (isSkillStage(stageCol, stageRow)) {
-    spawnRelaySquad(4.0, 4.8, 0);   // 隘路の奥から入口方向へ切れ目なく射撃
+    spawnRelaySquad(-5.5, -1.2, -Math.PI / 2);   // 隘路の奥から左の入口方向へ切れ目なく射撃
     n -= 6;
   }
   if (isHQ) {
